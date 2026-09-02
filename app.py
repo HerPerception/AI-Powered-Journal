@@ -1,7 +1,9 @@
+from datetime import datetime
 from flask import Flask, render_template, request
 import json
 import requests
 import os
+import sqlite3
 
 app = Flask(__name__)
 
@@ -40,7 +42,26 @@ def save_entry():
     mood_label = formatted_text["mood_label"]
     mood_score = formatted_text["mood_score"]
     reflection = formatted_text["reflection"]
+    timestamp = str(datetime.now())
+    conn = sqlite3.connect("journal.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            text TEXT,
+            mood_label TEXT,
+            mood_score INTEGER,
+            reflection TEXT
+        )
+        """)
 
+    cursor.execute(
+        "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
+        (timestamp, user_entry, mood_label, mood_score, reflection))
+
+    conn.commit()
+    conn.close()
     print(f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}"
 )
     return f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}"
