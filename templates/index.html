@@ -5,6 +5,14 @@
 </head>
 <body>
     <h1>My Journal</h1>
+    {% for each_entry in entries %}
+    <div>
+        {{each_entry[2]}}<br>
+        {{each_entry[3]}}<br>
+        {{each_entry[5]}}<br>
+        <br>
+    </div>
+    {% endfor %}
     <form action="/entries" method="post">
     <textarea name="entry_text"></textarea>
     <button type="submit">Save</button>
