@@ -10,7 +10,14 @@ app = Flask(__name__)
 @app.route("/")
 def banana():
     # return "Hello from banana"
-    return render_template("index.html")
+
+    conn = sqlite3.connect("journal.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM entries")
+    entries = cursor.fetchall()
+    conn.close()
+
+    return render_template("index.html", entries=entries)
 
 @app.route("/entries", methods=["POST"])
 def save_entry():
