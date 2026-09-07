@@ -13,6 +13,11 @@
         <br>
     </div>
     {% endfor %}
+    <svg width="400" height="200">
+    {% for each_entry in entries %}
+    <circle cx="{{ loop.index0 * 40 }}" cy="{{ 200 - (each_entry[4] * 20)}}" r="5" />
+    {% endfor %}
+    </svg>
     <form action="/entries" method="post">
     <textarea name="entry_text"></textarea>
     <button type="submit">Save</button>

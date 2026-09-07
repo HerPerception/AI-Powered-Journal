@@ -23,9 +23,9 @@ def banana():
 def save_entry():
     user_entry = request.form["entry_text"]
     api_key = os.environ.get("GROQ_API_KEY")
-    model = "qwen/qwen3.6-27b"
+    model = "openai/gpt-oss-20b"
     url = "https://api.groq.com/openai/v1/chat/completions"
-    prompt = f"Read this entry {user_entry}, predict the mood in one word, give a mood score on the scale of 1-10, and a two-sentence reflection. Return in JSON format, for example {{'mood_label': 'stressed', 'mood_score': 4, 'reflection': '...'}}"
+    prompt = f"Read this entry {user_entry}, predict the mood in one word, give a mood score on the scale of 1-10, 10 represents very positive feelings, 1 represents very negative feelings, regardless of the specific mood word, and a two-sentence reflection. Return in correct JSON format, for example {{\"mood_label\": \"stressed\", \"mood_score\": 4, \"reflection\": \"...\"}}"
     response = requests.post(
         url,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
@@ -33,15 +33,16 @@ def save_entry():
                 "model": model,
                 "messages": [
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                "max_tokens": 1000
         }
     )
     data = response.json()
     print(data)
     first_choice = data["choices"][0]
     model_text = first_choice["message"]["content"]
-    index = model_text.find("</think>")
-    model_text = model_text[index+len("</think>"):]
+    #index = model_text.find("</think>")
+    #model_text = model_text[index+len("</think>"):]
     model_text = model_text.replace("```json", "")
     model_text = model_text.replace("```", "")
     formatted_text = json.loads(model_text)
