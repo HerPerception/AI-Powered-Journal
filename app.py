@@ -7,6 +7,22 @@ import sqlite3
 
 app = Flask(__name__)
 
+def connect_db():
+    conn = sqlite3.connect("journal.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            text TEXT,
+            mood_label TEXT,
+            mood_score INTEGER,
+            reflection TEXT
+        )
+        """)
+    conn.commit()
+    return conn
+
 @app.route("/")
 def banana():
     # return "Hello from banana"
@@ -75,4 +91,5 @@ def save_entry():
     return f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}"
 
 if __name__ == "__main__":
+    connect_db()   # ensure schema before serving anything
     app.run(debug=True)
