@@ -39,6 +39,7 @@ def banana():
 def save_entry():
     user_entry = request.form["entry_text"]
     api_key = os.environ.get("GROQ_API_KEY")
+    print(api_key)
     model = "openai/gpt-oss-20b"
     url = "https://api.groq.com/openai/v1/chat/completions"
     prompt = f"Read this entry {user_entry}, predict the mood in one word, give a mood score on the scale of 1-10, 10 represents very positive feelings, 1 represents very negative feelings, regardless of the specific mood word, and a two-sentence reflection. Return in correct JSON format, for example {{\"mood_label\": \"stressed\", \"mood_score\": 4, \"reflection\": \"...\"}}"
@@ -69,17 +70,6 @@ def save_entry():
     timestamp = str(datetime.now())
     conn = sqlite3.connect("journal.db")
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            text TEXT,
-            mood_label TEXT,
-            mood_score INTEGER,
-            reflection TEXT
-        )
-        """)
-
     cursor.execute(
         "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
         (timestamp, user_entry, mood_label, mood_score, reflection))
