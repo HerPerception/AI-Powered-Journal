@@ -27,7 +27,7 @@ def connect_db():
 def banana():
     # return "Hello from banana"
 
-    conn = sqlite3.connect("journal.db")
+    conn = connect_db()   # ensure schema before serving anything
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM entries")
     entries = cursor.fetchall()
@@ -54,6 +54,7 @@ def save_entry():
                 "max_tokens": 1000
         }
     )
+    
     data = response.json()
     print(data)
     first_choice = data["choices"][0]
@@ -68,7 +69,7 @@ def save_entry():
     mood_score = formatted_text["mood_score"]
     reflection = formatted_text["reflection"]
     timestamp = str(datetime.now())
-    conn = sqlite3.connect("journal.db")
+    conn = connect_db()   # ensure schema before serving anything
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
