@@ -59,8 +59,7 @@ def save_entry():
     print(data)
     first_choice = data["choices"][0]
     model_text = first_choice["message"]["content"]
-    #index = model_text.find("</think>")
-    #model_text = model_text[index+len("</think>"):]
+   
     model_text = model_text.replace("```json", "")
     model_text = model_text.replace("```", "")
     formatted_text = json.loads(model_text)
