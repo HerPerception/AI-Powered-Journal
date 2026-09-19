@@ -69,7 +69,7 @@ def save_entry():
     mood_score = formatted_text["mood_score"]
     reflection = formatted_text["reflection"]
     timestamp = str(datetime.now())
-    conn = connect_db()   # ensure schema before serving anything
+    conn = connect_db()   # ensure schema before serving anything.
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 

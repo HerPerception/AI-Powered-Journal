@@ -1,2 +1,5 @@
 journal.db
 venv
+.env
+demo_import.py
+demo_name.py
