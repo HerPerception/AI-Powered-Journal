@@ -38,6 +38,15 @@ def banana():
 @app.route("/entries", methods=["POST"])
 def save_entry():
     user_entry = request.form["entry_text"]
+    timestamp = str(datetime.now())
+    conn = connect_db()   # ensure entry is saved so a failed API call does not cause a loss of the user entry.
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
+        (timestamp, user_entry, mood_label, mood_score, reflection))
+
+    conn.commit()
+    conn.close()
     api_key = os.environ.get("GROQ_API_KEY")
     model = "openai/gpt-oss-20b"
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -66,7 +75,6 @@ def save_entry():
     mood_label = formatted_text["mood_label"]
     mood_score = formatted_text["mood_score"]
     reflection = formatted_text["reflection"]
-    timestamp = str(datetime.now())
     conn = connect_db()   # ensure schema before serving anything, this should run even if I use 'flask run'.
     cursor = conn.cursor()
     cursor.execute(
