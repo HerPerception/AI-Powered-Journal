@@ -43,7 +43,7 @@ def save_entry():
     cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
-        (timestamp, user_entry, mood_label, mood_score, reflection))
+        (timestamp, user_entry, None, None, None))
 
     conn.commit()
     conn.close()
