@@ -44,7 +44,8 @@ def save_entry():
     cursor.execute(
         "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
         (timestamp, user_entry, None, None, None))
-
+    
+    entry_id = cursor.lastrowid      # ← add this
     conn.commit()
     conn.close()
     api_key = os.environ.get("GROQ_API_KEY")
@@ -78,8 +79,8 @@ def save_entry():
     conn = connect_db()   # ensure schema before serving anything, this should run even if I use 'flask run'.
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
-        (timestamp, user_entry, mood_label, mood_score, reflection))
+        "UPDATE entries SET mood_label = ?, mood_score = ?, reflection = ? WHERE id = ?",
+        (mood_label, mood_score, reflection, entry_id))
 
     conn.commit()
     conn.close()
