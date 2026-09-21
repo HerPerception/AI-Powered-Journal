@@ -52,18 +52,28 @@ def save_entry():
     model = "openai/gpt-oss-20b"
     url = "https://api.groq.com/openai/v1/chat/completions"
     prompt = f"Read this entry {user_entry}, predict the mood in one word, give a mood score on the scale of 1-10, 10 represents very positive feelings, 1 represents very negative feelings, regardless of the specific mood word, and a two-sentence reflection. Return in correct JSON format, for example {{\"mood_label\": \"stressed\", \"mood_score\": 4, \"reflection\": \"...\"}}"
-    response = requests.post(
-        url,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        json={
-                "model": model,
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": 1000
-        }
-    )
-    
+    try:
+       response = requests.post(
+            url,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            json={
+                  "model": model,
+                  "messages": [
+                      {"role": "user", "content": prompt}
+                  ],
+                  "max_tokens": 1000
+              },
+              timeout=10
+          )
+    except requests.exceptions.RequestException as e:
+          print(f"Groq request failed: {e}")
+          return "Entry saved. Mood analysis unavailable right now.", 502
+
+
+    if response.status_code != 200:
+        print(f"Groq returned {response.status_code}: {response.text}")
+        return "Entry saved. Mood analysis unavailable right now.", 502
+
     data = response.json()
     print(data)
     first_choice = data["choices"][0]
