@@ -38,6 +38,8 @@ def banana():
 @app.route("/entries", methods=["POST"])
 def save_entry():
     user_entry = request.form["entry_text"]
+    if len(user_entry) == 0:
+        return "No entry. Verify that an entry was made.", 400
     timestamp = str(datetime.now())
     conn = connect_db()   # ensure entry is saved so a failed API call does not cause a loss of the user entry.
     cursor = conn.cursor()
