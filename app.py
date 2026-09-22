@@ -81,8 +81,6 @@ def save_entry():
     first_choice = data["choices"][0]
     model_text = first_choice["message"]["content"]
    
-    model_text = model_text.replace("```json", "")
-    model_text = model_text.replace("```", "")
     formatted_text = json.loads(model_text)
 
     mood_label = formatted_text["mood_label"]
@@ -96,8 +94,7 @@ def save_entry():
 
     conn.commit()
     conn.close()
-    print(f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}"
-)
+    print(f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}")
     return f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}"
 
 if __name__ == "__main__":
