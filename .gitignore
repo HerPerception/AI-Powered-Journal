@@ -1,5 +1,9 @@
 journal.db
+journal.db-wal
+journal.db-shm
 venv
 .env
 demo_import.py
 demo_name.py
+probe_envelope.py
+__pycache__/

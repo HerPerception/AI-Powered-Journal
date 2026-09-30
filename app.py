@@ -1,32 +1,16 @@
-from datetime import datetime
-from flask import Flask, render_template, request
-import json
-import requests
 import os
-import sqlite3
+from datetime import datetime
+
+from flask import Flask, render_template, request
+
+from analysis import AnalysisError, analyze_entry
+from db import connect_db
 
 app = Flask(__name__)
 
-def connect_db():
-    conn = sqlite3.connect("journal.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            text TEXT,
-            mood_label TEXT,
-            mood_score INTEGER,
-            reflection TEXT
-        )
-        """)
-    conn.commit()
-    return conn
 
 @app.route("/")
 def banana():
-    # return "Hello from banana"
-
     conn = connect_db()   # ensure schema before serving anything, this should run even if I use 'flask run'
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM entries")
@@ -35,67 +19,48 @@ def banana():
 
     return render_template("index.html", entries=entries)
 
+
 @app.route("/entries", methods=["POST"])
 def save_entry():
-    user_entry = request.form["entry_text"]
-    if len(user_entry) == 0:
+    # `.get()` instead of `["entry_text"]`: an absent field is a bad request, not a
+    # crash. `.strip()` closes the gap where "   " slipped past the old length check.
+    user_entry = (request.form.get("entry_text") or "").strip()
+    if not user_entry:
         return "No entry. Verify that an entry was made.", 400
+
     timestamp = str(datetime.now())
-    conn = connect_db()   # ensure entry is saved so a failed API call does not cause a loss of the user entry.
+    conn = connect_db()   # save first: the writing is on disk before the network is touched
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)", 
+        "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)",
         (timestamp, user_entry, None, None, None))
-    
-    entry_id = cursor.lastrowid      # ← add this
+
+    entry_id = cursor.lastrowid      # readable only until conn.close()
     conn.commit()
     conn.close()
-    api_key = os.environ.get("GROQ_API_KEY")
-    model = "openai/gpt-oss-20b"
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    prompt = f"Read this entry {user_entry}, predict the mood in one word, give a mood score on the scale of 1-10, 10 represents very positive feelings, 1 represents very negative feelings, regardless of the specific mood word, and a two-sentence reflection. Return in correct JSON format, for example {{\"mood_label\": \"stressed\", \"mood_score\": 4, \"reflection\": \"...\"}}"
+
     try:
-       response = requests.post(
-            url,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-            json={
-                  "model": model,
-                  "messages": [
-                      {"role": "user", "content": prompt}
-                  ],
-                  "max_tokens": 1000
-              },
-              timeout=10
-          )
-    except requests.exceptions.RequestException as e:
-          print(f"Groq request failed: {e}")
-          return "Entry saved. Mood analysis unavailable right now.", 502
-
-
-    if response.status_code != 200:
-        print(f"Groq returned {response.status_code}: {response.text}")
+        analysis = analyze_entry(user_entry, os.environ.get("GROQ_API_KEY"))
+    except AnalysisError as e:
+        # One except clause, because analysis.py funnels every failure into one
+        # type. This is now the only place a Groq-shaped failure can reach the
+        # user -- a malformed model response can no longer become a 500.
+        print(f"Mood analysis failed for entry {entry_id}: {e}")
         return "Entry saved. Mood analysis unavailable right now.", 502
 
-    data = response.json()
-    print(data)
-    first_choice = data["choices"][0]
-    model_text = first_choice["message"]["content"]
-   
-    formatted_text = json.loads(model_text)
-
-    mood_label = formatted_text["mood_label"]
-    mood_score = formatted_text["mood_score"]
-    reflection = formatted_text["reflection"]
-    conn = connect_db()   # ensure schema before serving anything, this should run even if I use 'flask run'.
+    conn = connect_db()
     cursor = conn.cursor()
     cursor.execute(
         "UPDATE entries SET mood_label = ?, mood_score = ?, reflection = ? WHERE id = ?",
-        (mood_label, mood_score, reflection, entry_id))
+        (analysis.mood_label, analysis.mood_score, analysis.reflection, entry_id))
 
     conn.commit()
     conn.close()
-    print(f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}")
-    return f"Based on the journal entry, the mood is predicted to be: {mood_label}, with mood score: {mood_score}, and reflection: {reflection}"
+    return (
+        f"Based on the journal entry, the mood is predicted to be: {analysis.mood_label}, "
+        f"with mood score: {analysis.mood_score}, and reflection: {analysis.reflection}"
+    )
+
 
 if __name__ == "__main__":
     connect_db()   # ensure schema before serving anything
