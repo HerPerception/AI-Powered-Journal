@@ -25,11 +25,28 @@ MODEL = "openai/gpt-oss-20b"
 TIMEOUT_SECONDS = 10
 
 PROMPT = (
-    "Read this journal entry: {entry}. "
-    "Predict the mood in one word. "
-    "Give a mood score on a scale of 1-10, where 10 represents very positive "
-    "feelings and 1 represents very negative feelings, regardless of the specific mood word. "
-    "Also write a two-sentence reflection. "
+    "Read this journal entry: {entry}\n"
+    "\n"
+    "Return a JSON object with exactly these fields:\n"
+    "\n"
+    "mood_label: one word naming the dominant emotion.\n"
+    "mood_score: an integer from 1 to 10, where 10 represents very positive "
+    "feelings and 1 represents very negative feelings, regardless of the "
+    "specific mood word.\n"
+    "reflection: two or three sentences addressed to the writer that name what "
+    "they seem to be feeling, and may end with one open question inviting them "
+    "to think further.\n"
+    "\n"
+    "Rules for the reflection:\n"
+    "- Reflect only what is present in the entry. Do not invent details or events.\n"
+    "- Do not give advice, instructions, or recommendations.\n"
+    "- Do not diagnose, or mention medication, therapy, or treatment.\n"
+    "- Do not claim to be a person, a therapist, or a friend, and do not say "
+    "you are always available.\n"
+    "- Do not use clinical or medical language.\n"
+    "- If the entry suggests the writer may be in danger, keep the reflection "
+    "brief and non-directive. Do not attempt to counsel them.\n"
+    "\n"
     'Return a JSON object shaped exactly like this: '
     '{{"mood_label": "stressed", "mood_score": 4, "reflection": "..."}}'
 )
