@@ -131,9 +131,15 @@ def migrate(conn: sqlite3.Connection) -> int:
     return current
 
 
-def connect_db() -> sqlite3.Connection:
-    """Open the database, bring it up to date, and return the connection."""
-    conn = sqlite3.connect(DB_PATH, timeout=5.0)
+def connect_db(path: str = DB_PATH) -> sqlite3.Connection:
+    """Open the database, bring it up to date, and return the connection.
+
+    `path` is a parameter rather than a module-level constant lookup so tests can
+    point at a throwaway file. A layer that can only ever talk to the real
+    database is a layer that cannot be tested for the mistake that matters most
+    here -- reading another user's rows.
+    """
+    conn = sqlite3.connect(path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
