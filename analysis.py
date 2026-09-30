@@ -16,6 +16,7 @@ became a 500, even though the journal entry had already been saved successfully.
 from __future__ import annotations
 
 import json
+from typing import Literal, get_args
 
 import requests
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -24,12 +25,36 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "openai/gpt-oss-20b"
 TIMEOUT_SECONDS = 10
 
+# A closed vocabulary, defined exactly once.
+#
+# Observed: the same entry produced 'sad', 'stressed' and 'frustrated' across
+# three runs, while its mood_score stayed within one point of itself. The prompt
+# *defines* the score's scale, so the model has an anchor to land on. The label
+# had no defined set, so it reached for a fresh synonym each time.
+#
+# Closing the set buys two things:
+#   1. Less variance, because the space of possible answers is small and named
+#      rather than open-ended.
+#   2. The label becomes *groupable*. Free-text labels cannot be counted or
+#      charted -- eleven spellings of "anxious" are eleven series on a graph.
+#
+# The prompt text and the Pydantic type are both derived from this tuple, so
+# they cannot drift apart. Adding a label here teaches the model about it and
+# makes the validator accept it, in the same edit.
+MoodLabel = Literal[
+    "happy", "calm", "content", "motivated", "neutral", "tired",
+    "anxious", "stressed", "frustrated", "sad", "angry",
+]
+
+MOOD_LABEL_VALUES = get_args(MoodLabel)
+
 PROMPT = (
     "Read this journal entry: {entry}\n"
     "\n"
     "Return a JSON object with exactly these fields:\n"
     "\n"
-    "mood_label: one word naming the dominant emotion.\n"
+    "mood_label: the single word from this list that best names the dominant "
+    "emotion: " + ", ".join(MOOD_LABEL_VALUES) + ".\n"
     "mood_score: an integer from 1 to 10, where 10 represents very positive "
     "feelings and 1 represents very negative feelings, regardless of the "
     "specific mood word.\n"
@@ -40,6 +65,10 @@ PROMPT = (
     "Rules for the reflection:\n"
     "- Reflect only what is present in the entry. Do not invent details or events.\n"
     "- Do not give advice, instructions, or recommendations.\n"
+    "- Do not ask a question that suggests an action, technique, or next step. A\n"
+    "  question may only invite the writer to say more about what they already\n"
+    "  feel. Asking 'what small step could you take?' is advice wearing a\n"
+    "  question mark.\n"
     "- Do not diagnose, or mention medication, therapy, or treatment.\n"
     "- Do not claim to be a person, a therapist, or a friend, and do not say "
     "you are always available.\n"
@@ -69,13 +98,24 @@ class MoodAnalysis(BaseModel):
     database and safe to do arithmetic on later.
     """
 
-    mood_label: str = Field(min_length=1, max_length=40)
+    mood_label: MoodLabel
     mood_score: int = Field(ge=1, le=10)
     reflection: str = Field(min_length=1, max_length=1000)
 
-    @field_validator("mood_label", "reflection")
+    @field_validator("mood_label", mode="before")
     @classmethod
-    def strip_whitespace(cls, value: str) -> str:
+    def normalise_label(cls, value):
+        # mode="before" is load-bearing. The default ("after") runs the Literal
+        # membership check first, so a model returning " Stressed" -- stray
+        # space or a capital -- would be rejected before anything tidied it up.
+        # Normalise, then check membership.
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("reflection")
+    @classmethod
+    def strip_reflection(cls, value: str) -> str:
         return value.strip()
 
 
