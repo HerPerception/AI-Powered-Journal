@@ -79,7 +79,28 @@ def create_app(config_class: type = Config) -> Flask:
             "GROQ_API_KEY is not set. Entries will save, but none will be analysed."
         )
 
-    app.register_blueprint(auth_bp)
+    # cli_group=None, and it is not a default.
+    #
+    # `Blueprint.cli` commands are namespaced under the blueprint's name unless
+    # told otherwise. flask/sansio/blueprints.py:
+    #
+    #     cli_resolved_group = options.get("cli_group", self.cli_group)
+    #     if cli_resolved_group is None:          # <- we are here now
+    #         app.cli.commands.update(self.cli.commands)
+    #     elif cli_resolved_group is _sentinel:   # <- the default
+    #         self.cli.name = name
+    #         app.cli.add_command(self.cli)
+    #
+    # `cli_group` defaults to `_sentinel`, so `@bp.cli.command("create-user")`
+    # in auth.py registers as `flask auth create-user`, NOT `flask create-user`.
+    # It was written, documented and committed as the latter, and the mistake
+    # survived a green test run because no test touches the CLI.
+    #
+    # Passing None takes the first branch. The tradeoff: `.update()` is a plain
+    # dict merge, so if a second blueprint ever defines a command of the same
+    # name, the later registration silently replaces the earlier one. With one
+    # command that is not a risk worth namespacing for; with several, revisit.
+    app.register_blueprint(auth_bp, cli_group=None)
     app.register_blueprint(journal_bp)
 
     # Exposed to every template, so each form can carry a token without every

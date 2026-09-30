@@ -71,6 +71,7 @@ Each entry has the same four parts:
 **Security & correctness**
 30. [Privacy failures are silent — so isolation must be structural *and* tested](#30-privacy-failures-are-silent--so-isolation-must-be-structural-and-tested)
 31. [A test that can pass for the wrong reason is not a test](#31-a-test-that-can-pass-for-the-wrong-reason-is-not-a-test)
+32. [Coverage of one entry point is not coverage of the app](#32-coverage-of-one-entry-point-is-not-coverage-of-the-app)
 
 ---
 
@@ -1061,6 +1062,69 @@ assertion that rules the others out.
 
 ---
 
+## 32. Coverage of one entry point is not coverage of the app
+
+**What it means.** A test suite covers exactly the paths it *exercises*, and a path is not the
+same thing as a feature. `test_client()` runs requests through the **router** — it exercises
+`before_request`, the view function, the template, the response. That is one entry point.
+
+A CLI command is a different entry point. It never passes through routing, `before_request`, or
+a view. A suite built entirely on `test_client()` can be green, comprehensive and entirely
+silent about whether `flask create-user` exists.
+
+**How I proved it.** The isolation suite went green. The account-creation command, run a
+minute later:
+
+```
+$ flask create-user someone@example.com
+Error: No such command 'create-user'.
+```
+
+`@bp.cli.command("create-user")` in `auth.py` registered as **`flask auth create-user`**.
+`Blueprint.cli` namespaces commands under the blueprint name unless `cli_group` says otherwise
+— `flask/sansio/blueprints.py`:
+
+```python
+cli_resolved_group = options.get("cli_group", self.cli_group)
+
+if self.cli.commands:
+    if cli_resolved_group is None:           # unprefixed: flask create-user
+        app.cli.commands.update(self.cli.commands)
+    elif cli_resolved_group is _sentinel:    # the default: flask auth create-user
+        self.cli.name = name
+        app.cli.add_command(self.cli)
+```
+
+`cli_group` defaults to `_sentinel`, so the default is the *middle* branch. Fixed with
+`app.register_blueprint(auth_bp, cli_group=None)`.
+
+**And the severity, which is the part worth sitting with.** With `ALLOW_PUBLIC_SIGNUP` off —
+which is the default, deliberately — `create-user` is **the only way an account can exist**.
+So at the moment the suite was greenest, the app had no way in at all. The tests could not
+have caught it, and their passing made it *more* likely to be missed, not less.
+
+**The trap, in one sentence:** *"the tests pass" is a claim about the tests, not about the
+app.* The sentence is true and it sounds like the other thing.
+
+**The general shape.** Enumerate your entry points and note which are covered:
+
+| Entry point | Reached by `test_client()`? | Covered? |
+|---|---|---|
+| HTTP routes | ✅ | ✅ `test_isolation.py` |
+| CLI commands | ❌ | ✅ `test_cli.py` (added after this bug) |
+| Background worker | ❌ | ❌ **does not exist yet — #13 on the queue** |
+
+The third row is the point. The next feature on the list is a worker that polls
+`analysis_status='pending'` — **a third entry point that `test_client()` can never reach.**
+The same blind spot, already scheduled, one commit away.
+
+**Where it lives.** `app.py` (`cli_group=None`, with the source quoted in the comment),
+`tests/test_cli.py`, and `tests/conftest.py` — the fixtures moved there because pytest only
+shares a fixture with the module that defines it, and two copies would drift into two subtly
+different test applications without saying so.
+
+---
+
 *Last updated: 2026-09-30.*
-*Next concepts to append: the background analysis worker, the `pending`-row sweep, and
-whatever the first test run teaches (which is not yet known).*
+*Next concepts to append: the background analysis worker — an entry point `test_client()`
+cannot reach — and the `pending`-row sweep.*

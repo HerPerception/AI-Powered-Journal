@@ -5,53 +5,9 @@ habit slips. A privacy bug does not announce itself the way a crash does -- the
 page renders, the request is a 200, and the only symptom is that someone is
 reading a stranger's diary and neither of them knows.
 """
-import pytest
-
-from app import create_app
 from db import connect_db
 
 PASSWORD = "password123"
-
-
-class TestConfig:
-    # A literal, not a secret. It signs test cookies for the duration of one
-    # test function and protects nothing.
-    SECRET_KEY = "test-only"
-    TESTING = True
-
-    # None, and this is what keeps the suite hermetic.
-    #
-    # analyze_entry raises AnalysisError immediately when the key is falsy, so
-    # /entries never reaches the network. The save-first design means the row is
-    # written *before* that call, so the entry still lands -- which is exactly
-    # the behaviour the isolation test needs to exercise. No mock, no monkeypatch,
-    # no recorded fixture, no requests to Groq from CI.
-    GROQ_API_KEY = None
-
-    ALLOW_PUBLIC_SIGNUP = True
-
-    # Off, so the POSTs below do not have to carry a token. This means the tests
-    # do NOT cover csrf_protect -- that needs its own test, and until it has one,
-    # CSRF is the least-verified thing in auth.py.
-    CSRF_ENABLED = False
-
-    DATABASE = None  # overridden per test
-
-
-@pytest.fixture
-def journal_app(tmp_path):
-    """A whole app on a throwaway database. One file per test function."""
-
-    class Config(TestConfig):
-        DATABASE = str(tmp_path / "test.db")
-
-    return create_app(Config)
-
-
-@pytest.fixture
-def client(journal_app):
-    with journal_app.test_client() as test_client:
-        yield test_client
 
 
 def register_and_login(client, email):

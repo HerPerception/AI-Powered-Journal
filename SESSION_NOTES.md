@@ -181,6 +181,46 @@ accounts get made. It also claims the three ownerless dev rows — but **only wh
 the first user**, and deliberately *not* in the public signup route: unreferenced rows must
 never be adopted by whoever happens to register next.
 
+### ⚠️ The CLI bug — found *after* the tests went green
+
+The commit went in, and then:
+
+```
+Error: No such command 'create-user'.
+```
+
+`@bp.cli.command("create-user")` in `auth.py` read as `flask create-user`. It actually
+registered as **`flask auth create-user`**. `Blueprint.cli` namespaces its commands under the
+blueprint name unless told otherwise — `flask/sansio/blueprints.py`:
+
+```python
+cli_resolved_group = options.get("cli_group", self.cli_group)
+if self.cli.commands:
+    if cli_resolved_group is None:           # ← what we want
+        app.cli.commands.update(self.cli.commands)
+    elif cli_resolved_group is _sentinel:    # ← the default, and where we were
+        self.cli.name = name
+        app.cli.add_command(self.cli)
+```
+
+`cli_group` defaults to `_sentinel`, so it took the middle branch.
+
+**Fixed** by `app.register_blueprint(auth_bp, cli_group=None)` in `create_app()`, set
+explicitly with the source quoted in the comment. Tradeoff noted there: the `None` branch is
+a plain `dict.update()`, so a second blueprint defining `create-user` would *silently*
+replace this one.
+
+**Why a green suite missed it — this is the transferable part.** The isolation tests drive
+the app through `test_client()`, which exercises **routes**. A CLI command is not a route: it
+never passes through routing, `before_request`, or a view function. **A suite that tests one
+entry point says nothing about the other entry points.** With signup closed, `create-user` is
+the *only* way into the app, and it was unreachable while every test passed.
+
+`tests/test_cli.py` now asserts the command resolves unprefixed — and asserts `"auth"` is
+**not** in `cli.commands`, so removing the `cli_group=None` fails the build instead of
+silently re-namespacing. Same principle as §30: make it structural, then make a test fail
+when it breaks.
+
 ---
 
 ## 🧱 4. Schema — migration 2 and 3
@@ -219,35 +259,27 @@ Migration 3 adds an index on `entries.user_id`, because every read now filters b
 | 12 | **Test `csrf_protect`** | ⬜ it is off in tests, so nothing covers it |
 | 13 | Deferred/background analysis worker | ⬜ next real feature |
 | 14 | Retry/sweep for `pending` rows, capped by `retry_count` | ⬜ |
-| 15 | Delete probe files | ⬜ |
+| 15 | Probe files — **already deleted** (none appear in `git status`) | ✅ |
 | 16 | Deploy (gunicorn) + WAL concurrency tuning | ⬜ |
 | 17 | Login timing side channel | ⬜ |
 | 18 | Password reset / email verification | ⬜ not started |
+| 19 | CLI registration | ✅ fixed, `tests/test_cli.py` |
 
-### Files to deal with (#15) — throwaway, none are part of the app
+### Probe files (#15) — already gone
 
-```
-probe_sqlite.py  probe_api.py  probe_none.py  probe_null.py (or prob_null.py)
-check_key.py     show_db.py    demo_import.py demo_name.py
-```
+`git status --short` after the commit showed no `probe_*.py`, `check_key.py` or `show_db.py`.
+They were deleted before this session and never committed, so nothing was lost. `demo_*.py`
+stay on disk, covered by `.gitignore`.
 
-**But look at what deleting them costs.** `LEARNING_LOG.md` cites these files **by name as the
-proof** for §§1, 2, 7, 11, 13 and 18 — *"How I proved it (`probe_null.py`)"*. Delete them and
-the log cites evidence that no longer exists, in a repo where the reader cannot check any of
-it. The log would become a set of claims.
+**The cost, for the record:** `LEARNING_LOG.md` cites `probe_sqlite.py`, `probe_null.py`,
+`probe_none.py`, `probe_api.py`, `demo_import.py` and `demo_name.py` **by name as the proof**
+for §§1, 2, 7, 11, 13 and 18 — *"How I proved it (`probe_null.py`)"*. Those files are now
+either deleted or untracked, so the log cites evidence a reader of this repo cannot check.
 
 That is the same failure this project keeps hitting, one level up: **an assertion is not
-evidence, and the remedy is a runnable artifact.**
-
-**Better than deleting: move them to `experiments/` and commit them.** ~8 small files that
-each demonstrate one concept, referenced from the log by relative path. They cost nothing,
-they run in under a second, and they turn the log from "things the mentor said" into "things
-you can re-run."
-
-`show_db.py` is the one genuine exception — it was a convenience, keep it only if you'll
-actually use it.
-
-`__pycache__/` and the `.db`/`.db-wal`/`.db-shm` files stay gitignored. That part is right.
+evidence, and the remedy is a runnable artifact.** If you rebuild any of those experiments,
+commit them under `experiments/` and reference them by path. ~8 tiny files, under a second to
+run, and they turn the log from "things the mentor said" into "things you can re-run."
 
 ---
 
