@@ -1,10 +1,12 @@
 # Session Notes — AI-Powered-Journal
 
-**Last worked: 2026-09-21 (ran past midnight into the 22nd).** Read this whole file before touching anything.
+**Last worked: 2026-09-30.** Read this whole file before touching anything.
 
-> **The app works.** Both the success path and the failure path are correct and were
-> observed working. Nothing is broken. Yesterday's notes were written while `app.py`
-> was mid-refactor and are now mostly obsolete — this file replaces them.
+> **⚠️ THE TESTS HAVE NOT BEEN RUN.**
+> `tests/test_isolation.py` was written but never executed — the shell was unavailable
+> when it landed. Everything it asserts is *believed*, not *observed*. **Run
+> `python -m pytest tests/ -q` before trusting any of the auth work.** If it fails, the
+> failure is real and the code is wrong; do not adjust the test to match.
 
 ---
 
@@ -12,353 +14,300 @@
 
 | Thing | Status |
 |---|---|
-| `app.py` | **works.** Both branches verified against a live server. |
-| `journal.db` | exists, has 2 rows (one analyzed, one `NULL` from the deliberate 401 test) |
-| `.env` | exists, holds the real (new) Groq key, **gitignored, never committed** |
-| `venv/` | repaired — see §2. `python-dotenv` installed. |
-| `venv/` in git | **still tracked in the index** — `git rm -r --cached venv` may not have been committed yet. **Check this first.** |
+| `app.py` | **app factory.** `create_app()` builds the app; `__main__` only starts a dev server. |
+| `config.py` | **new.** All `os.environ` reads, one `load_dotenv()` at module top. |
+| `db.py` | **new.** Schema versioning via `PRAGMA user_version`, now at **version 3**. |
+| `journal.py` | **new.** Blueprint. Both routes `@login_required`, both queries `WHERE user_id = ?`. |
+| `analysis.py` | **new.** The only module that talks to Groq. |
+| `auth.py` | **new, untested.** Sessions, CSRF, signup/login/logout, `flask create-user`. |
+| `templates/` | `base.html` (new), `index.html` (rewritten), `login.html`, `signup.html` |
+| `tests/test_isolation.py` | **new, never executed.** |
+| `journal.db` | schema v3. Contains the 3 original dev rows, all `analysis_status='ok'`. |
+| `.env` | holds `SECRET_KEY` + `GROQ_API_KEY`. **Gitignored, never committed.** |
+| `venv/` | untracked. |
+| git | clean apart from `.gitignore`. Latest commit below. |
 
-**Verify before doing anything else:**
+**Recent commits:**
 
-```bash
-git status              # is venv/ still showing as staged deletions?
-venv/bin/python -c "import sys; print(sys.prefix)"   # must print .../AI-Powered-Journal/venv
+```
+090e6bc  Reflect rather than advise; close the mood vocabulary; add a static safety line
+bf61f58  Extract an app factory; move configuration out of __main__
+2367f60  Validate model output, add schema versioning and accounts
 ```
 
 ---
 
-## 🔐 1. Security — RESOLVED, and better than feared
+## 🔐 1. Security
 
-- The exposed Groq key was **revoked** and replaced. ✅
-- `.env` **is** in `.gitignore` (line 3) and `git check-ignore -v .env` confirms it. ✅
-- **The key was never committed.** Verified by scanning every commit in the repo for
-  key-shaped strings (`gsk_`, `sk-`) — zero hits. The "Securing API Key" commit
-  (`08e140c`) removed exactly one line, `print(api_key)`; no literal key was ever in git.
-  **No history rewrite needed.**
-- Still open (cosmetic): `venv/` (1,469 files) and `__pycache__/*.pyc` are tracked.
+- The exposed Groq key was **revoked and replaced** (2026-09-21). ✅
+- `.env` is gitignored and was never committed — verified by scanning every commit for
+  `gsk_` / `sk-` shaped strings. **No history rewrite needed.** ✅
+- `SECRET_KEY` is **fatal if missing** — without it Flask cannot sign a session cookie, so
+  nobody can log in. The app is not partially working; it is entirely not working.
+- `GROQ_API_KEY` is **a warning, not fatal** — and the asymmetry is deliberate. See §5.
+
+**Still open (cosmetic):** `venv/` and `__pycache__/*.pyc` are tracked in the index.
 
 ---
 
-## 🐛 2. The broken venv — and what it taught
+## 🏗️ 2. What got built — 2026-09-22 to 09-30
 
-`flask run` failed with `ModuleNotFoundError: No module named 'flask'` **even though
-Flask was installed** at `venv/lib/python3.12/site-packages/flask/`.
+### a) The app factory — the third-occurrence pattern, resolved
 
-**Cause:** `venv/pyvenv.cfg` was missing.
+`debug=True` sat inside `if __name__ == "__main__":`, so `flask run` and `python app.py`
+produced **two different servers**:
 
-- A venv is a folder **plus a marker file** (`pyvenv.cfg`).
-- Python looks for that marker beside its executable. Found → "I'm a venv, my packages
-  are in `./lib/python3.12/site-packages`." Not found → "I'm the system Python" →
-  `/usr/lib/python3/dist-packages` → no Flask.
-- `venv/bin/python` is just a symlink to the system Python. **The marker is the only
-  thing that makes it a venv.**
-- Proof: `venv/bin/python -c "import sys; print(sys.prefix)"` printed **`/usr`**.
-
-**Why it happened:** `venv/` is tracked in git, but `pyvenv.cfg` was *not* — `git status`
-was clean, so an untracked deletion can't be shown there. Every tracked venv file was
-restored; the one file that made it work was not.
-
-**The lesson:** *a venv is disposable; `requirements.txt` is the durable artifact.*
-
-**The fix that worked:**
-
-```bash
-git rm -r --cached venv              # untrack (keeps files on disk)
-python3 -m venv --clear venv         # regenerates pyvenv.cfg
-venv/bin/pip install -r requirements.txt
+```
+python app.py          flask run
+---------------        --------------
+Debug mode: on         Debug mode: off
+Restarting with stat   (absent)
+Debugger is active!    (absent)
+Debugger PIN: 115-...  (absent)
 ```
 
-**Also learned:** `(venv)` in your shell prompt only means your **shell** knows where the
-venv is. It says nothing about what your **interpreter** does. Activation is a `PATH`
-convenience, not configuration.
+That was the **fourth** "must run however you launch this" bug — after `connect_db()`,
+`.env` loading, and the queued startup key check. Rather than patch a fourth instance, the
+factory **dissolves the category**: `flask run`, `gunicorn` and `python app.py` all call
+`create_app()`, so anything inside it applies identically to all three.
 
----
+**This answers the queued question from §6 of the previous notes.** The startup key check
+goes in `create_app()` — the one function every launch path calls. It no longer has to be
+put in a place that "also runs under `flask run`", because there is no longer a place that
+doesn't.
 
-## 🧱 3. SQL `NULL` — the concept of the day
+### b) `analysis.py` — every failure collapses into one type
 
-`''` and `NULL` are **not** interchangeable for "no mood yet."
+The old code caught only `requests.RequestException`, which is the **transport** layer's
+exception. Everything that failed *after* the bytes arrived — JSON parsing, key lookup,
+validation — escaped and became a `500`, even though the entry had already saved fine.
 
-- `''` = *"the API answered, and the answer was blank."* (a known value)
-- `NULL` = *"the API never answered."* (unknown)
+`AnalysisError` is now the single exception type for all of it. The caller catches exactly
+one thing and cannot let a new failure mode through by not having heard of its class.
 
-**SQL has three truth values: TRUE, FALSE, UNKNOWN.** Comparing anything to `NULL` yields
-UNKNOWN, and `WHERE` keeps only TRUE rows — so `NULL` rows **silently vanish** from
-comparisons. Proven with `probe_null.py`:
-
-| query | count | why |
+| # | Failure | Surface |
 |---|---|---|
-| `WHERE label = ''` | 1 | matches only the blank row |
-| `WHERE label IS NULL` | 1 | matches only the unknown row |
-| `WHERE label != 'calm'` | **1** (not 2!) | the `NULL` row evaluates to UNKNOWN and is **dropped** |
+| a | Groq replies with an error | `status_code != 200` |
+| b | Groq never replies | `except RequestException` |
+| c | Connection hangs | `timeout=10` |
+| d | **Bytes arrived, but they're wrong** | **new — parse + validate** |
 
-That's why `= NULL` never works — always `IS NULL` / `IS NOT NULL`.
+(d) was the hole.
 
-**Why this mattered for the design:** storing `''` for un-analyzed entries would make them
-indistinguishable from genuinely-blank results, and
+### c) Pydantic validation + schema versioning
 
-```sql
-SELECT * FROM entries WHERE mood_label IS NULL
-```
+`MoodAnalysis` is a `BaseModel` enforcing the shape rather than hoping for it: coerces
+`"8"` → `8`, rejects `8.5`, rejects a score outside 1–10, rejects a missing key. Anything
+that survives it is safe to write to the database.
 
-**could not exist.** That query is the retry queue. `None` in Python → `NULL` in SQLite.
+**`@field_validator(mode="before")` is load-bearing** for `mood_label`. The default
+(`"after"`) runs the `Literal` membership check *first*, so a model returning `" Stressed"`
+— stray space, capital letter — would be rejected before anything tidied it up. Normalise,
+*then* check membership.
 
----
+### d) The closed mood vocabulary
 
-## 🔨 4. What got built
+Observed: the **same entry** across four runs gave labels `sad` / `stressed` / `frustrated`
+/ `stressed`, while `mood_score` stayed at `3` / `4` / `4` / `4`.
 
-### a) Error B — the three pre-API values
+**Why the score was stable and the label wasn't:** the prompt *defines* the score's scale
+("1 to 10, where 10 is very positive"). It never defined the label's vocabulary, so the
+model reached for a fresh synonym each time. **A defined range is an anchor; an undefined
+one is an invitation.**
 
-The `INSERT` runs before the API is called, so three names had no value yet. Fixed by
-passing `None` inline:
+`MoodLabel` is now a `Literal` of 11 words, and **the prompt text and the Pydantic type are
+both derived from it** (`get_args`), so they cannot drift apart.
 
-```python
-cursor.execute(
-    "INSERT INTO entries (timestamp, text, mood_label, mood_score, reflection) VALUES (?, ?, ?, ?, ?)",
-    (timestamp, user_entry, None, None, None))
-```
+> *Caveat: n=4. This is an observation, not a measurement. It says the variance was real
+> and that the fix targets the right cause — not that it eliminates variance.*
 
-### b) Error C — the double write became an `UPDATE`
+### e) Reflect, don't advise — and where that failed
 
-The second `INSERT` produced a **duplicate row per submission** (observed: rows 2/3 and
-4/5 shared the same timestamp — one submission, two rows). Fixed:
+The prompt was rewritten to forbid advice, action-suggesting questions, diagnosis, persona
+claims, and clinical language. **Banning a form does not remove an intent.** Advice came
+back wearing a question mark:
 
-```python
-entry_id = cursor.lastrowid      # immediately after the first execute, BEFORE conn.close()
-...
-cursor.execute(
-    "UPDATE entries SET mood_label = ?, mood_score = ?, reflection = ? WHERE id = ?",
-    (mood_label, mood_score, reflection, entry_id))
-```
+> *"What small step could help you start moving forward?"*
 
-**`cursor.lastrowid` is only readable until the connection closes.** Capture it before
-line 50's `conn.close()`, or it's gone.
+That is advice. It has a `?` on the end. And run 1 — which predated **both** prompt edits —
+*already* advised and offered presence, which tells you this is the **model's default
+disposition**, not something the prompt caused. Prompt rules reduce it; they do not
+guarantee it.
 
-**`UPDATE` anatomy:** `UPDATE <table> SET <col>=?,... WHERE <which rows>`.
-**⚠️ Omit the `WHERE` and you update EVERY row — silently, no undo.**
-
-### c) The template — two separate bugs
-
-The homepage 500'd with `TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'`
-at `index.html` line 18 — inside the SVG block that had been **commented out** with
-`<!-- -->` months ago.
-
-> **HTML comments (`<!-- -->`) are for the *browser*. Jinja2 never sees them.** Jinja
-> renders the template on the server *first*, so `{% %}` and `{{ }}` inside an HTML comment
-> **still execute.** Jinja's own comment syntax is `{# ... #}`.
-
-Fixed by deleting the block entirely, and adding `or ""` to the three display fields so a
-`NULL` renders as nothing rather than the literal word `None`:
-
-```jinja
-{{ each_entry[3] or "" }}
-```
-
-**Storage layer says "unknown" (`None`); display layer shows nothing (`or ""`). Different
-layers, different tools.**
-
-### d) Status-code handling + network errors
-
-```python
-    try:
-        response = requests.post(
-            url,
-            headers={...},
-            json={...},
-            timeout=10
-        )
-    except requests.exceptions.RequestException as e:
-        print(f"Groq request failed: {e}")
-        return "Entry saved. Mood analysis unavailable right now.", 502
-
-    if response.status_code != 200:
-        print(f"Groq returned {response.status_code}: {response.text}")
-        return "Entry saved. Mood analysis unavailable right now.", 502
-```
-
-Three failure shapes, all now handled:
-
-| # | Failure | Where it surfaces |
-|---|---|---|
-| a | Groq replies with an error (`401`/`429`/`503`) | the `if` on `status_code` |
-| b | Groq never replies (DNS, refused) | `requests.post` **raises** → the `except` |
-| c | Connection hangs forever | `timeout=10` → raises `Timeout` → the `except` |
-
-`requests.exceptions.RequestException` is the **parent** of every error `requests` raises,
-so one `except` catches all of them.
-
-**Two principles encoded here:**
-1. **An error the user cannot act on should not be shown to them in detail.** The user gets
-   a plain sentence; `print()` logs `401 invalid_api_key` for *you*.
-2. **`500` says "I'm broken." `502` says "the thing behind me is broken."** The save worked
-   — so `502`.
-
-### e) Verified in production
-
-- **Success path:** browser OK, `POST /entries 200`, row written with `mood_label='stressed'`,
-  `mood_score=4`, reflection filled.
-- **Failure path** (deliberately induced bad key): browser showed
-  *"Entry saved. Mood analysis unavailable."*; terminal printed
-  `Groq returned 401: {"error":{"message":"Invalid API Key",...}}`; server logged
-  `"POST /entries HTTP/1.1" 502`; and the DB **still had the entry**, with `NULL` mood.
-
-**The row survives every failure.** That was the whole design.
+**Which is why the crisis line is static HTML, not a model instruction.** A prompt saying
+"mention crisis resources if appropriate" is a *probability* — missable, arguable,
+degradable by an unusual entry. A line that no model produces cannot fail. It now lives in
+`base.html`, so **every page inherits it by extending the base** — there is nothing to
+remember, and a page added later gets it for free.
 
 ---
 
-## 🧠 5. The design decision, restated (now with evidence)
+## 🔒 3. Auth — the privacy model
 
-**Save FIRST, then analyze.** `INSERT` (mood = `None`) → call API → `UPDATE` the same row.
+Three sentences, and the second one is the dangerous one:
 
-Why not one `INSERT` at the end with everything known? Because everything between
-`commit()` (line 49) and the `UPDATE` (line 85) can fail — network, DNS, timeout, bad key,
-rate limit, malformed JSON, the process being killed. **Any of those and the writing is
-gone forever.** Save-first means the entry is on disk before the network is touched.
+1. Every journal route has `@login_required`.
+2. Every query touching entries carries `WHERE user_id = ?`.
+3. Every state-changing request carries a CSRF token.
 
-Cost: one extra local SQLite write. Benefit: no user ever loses an entry.
+**A missing login check gives you a redirect you notice. A missing `WHERE` gives you
+someone else's diary and no error at all.** That asymmetry is why (2) needs a test rather
+than care.
+
+**The test's precondition is the whole point.** `tests/test_isolation.py` asserts both rows
+are *in the table*, owned by *two different users* — **before** asserting neither is
+visible. Without that, `assert "AAAA" not in body` passes just as happily on an empty
+database. **"Not visible" and "not there" are different claims and only one is privacy.**
+
+**The suite needs no network.** `GROQ_API_KEY = None` → `analyze_entry` raises instantly →
+but the row was already inserted *before* that call. The save-first design from 09-21 is
+what makes this test hermetic: no mock, no recorded fixture, no request to Groq from CI.
+
+### The four decisions in `auth.py`
+
+| Decision | Why |
+|---|---|
+| `session.clear()` **before** storing the user id on login | Session fixation. Otherwise a cookie planted before you log in survives it. |
+| One message for wrong password *and* unknown email | Distinguishing them is a free account-enumeration oracle. |
+| Logout is **POST**, not GET | A GET logout fires from any `<img>` tag on any site. |
+| Signup **closed by default** (`ALLOW_PUBLIC_SIGNUP`) | Opening the door to strangers is a deliberate env var, not something you get by forgetting to close it. |
+
+**Not done, and on the list:** `check_password_hash` only runs when the user exists, so an
+unknown email returns measurably faster than a wrong password. Fixing it means hashing a
+dummy password on the miss path. It is a timing side channel.
+
+**The invite path is `flask create-user <email>`.** Because signup is off, this is how
+accounts get made. It also claims the three ownerless dev rows — but **only when it creates
+the first user**, and deliberately *not* in the public signup route: unreferenced rows must
+never be adopted by whoever happens to register next.
 
 ---
 
-## 🚧 6. START HERE TOMORROW — startup API key check
+## 🧱 4. Schema — migration 2 and 3
 
-**Decision made: build the startup key validation first.**
+**`PRAGMA user_version`** is SQLite's built-in schema version counter. Each migration is a
+function taking version N−1 → N. **They are never edited once shipped** — editing an
+applied migration means two databases claiming the same version have different shapes.
 
-Validate the key once at boot: hit Groq, and if the key is bad, **fail loudly at startup**
-instead of discovering it one journal entry at a time. *Fail fast beats fail quietly.*
+**`ALTER TABLE ADD COLUMN` appends**, so the original columns kept indices 0–5 and
+`index.html`'s positional `each_entry[2]/[3]/[5]` survived. That is a property of the
+migration, not of the template — a table rebuild would reorder them and the page would
+silently show mood scores where reflections belong.
 
-### ⚠️ The trap — this is the question to answer first
+**That fragility is now retired.** `index.html` reads `entry["text"]`, `entry["mood_label"]`,
+`entry["reflection"]` — by name, via `row_factory = sqlite3.Row` in `db.py`.
 
-> **Where does the check go so it runs under BOTH `flask run` and `python app.py`?**
-
-This is the **third time** this exact shape has appeared:
-
-1. `connect_db()` inside `if __name__ == "__main__":` → skipped under `flask run` → no table
-2. `.env` loading → turned out to be fine (verified from source)
-3. Now: a startup key check → putting it in the `__main__` block means it **silently does
-   not run under `flask run`** — a safety net with a hole exactly where you use it.
-
-Note: `@app.before_first_request` was **removed in Flask 3.x** — that is not the answer.
-
-Hint: what runs when a module is *imported*? You proved in `demo_import.py` that
-`import` **executes the file top-to-bottom**. Where does `flask run`'s import land?
-
-**Think about it before writing code.**
+Migration 3 adds an index on `entries.user_id`, because every read now filters by it.
 
 ---
 
-## 📋 7. The rest of the queue
+## 📋 5. The queue
 
 | # | Item | Status |
 |---|---|---|
-| 1 | Security (key revoked, `.env` ignored) | ✅ done |
-| 2 | Status code + timeout + network errors | ✅ done |
-| 3 | Save-first ordering (INSERT → API → UPDATE) | ✅ done |
-| 4 | Template `NULL` handling | ✅ done |
-| 5 | Delete probe files | ⬜ **not done** |
-| 6 | Commit `git rm -r --cached venv` if uncommitted | ⬜ check |
-| 7 | Startup key check | ⬜ **next** |
-| 8 | Sweep / retry for `NULL` rows | ⬜ after #7 |
+| 1 | Security (key revoked, `.env` ignored) | ✅ |
+| 2 | Status code + timeout + network errors | ✅ |
+| 3 | Save-first ordering | ✅ |
+| 4 | Template `NULL` handling | ✅ |
+| 5 | **Run the isolation tests** | ⬜ **DO THIS FIRST** |
+| 6 | App factory — the launch-path divergence | ✅ |
+| 7 | Validate model output (Pydantic) | ✅ |
+| 8 | Schema versioning | ✅ |
+| 9 | Closed mood vocabulary | ✅ |
+| 10 | Static safety line on every page | ✅ |
+| 11 | Accounts, sessions, CSRF, per-user scoping | ✅ **written, unverified** |
+| 12 | **Test `csrf_protect`** | ⬜ it is off in tests, so nothing covers it |
+| 13 | Deferred/background analysis worker | ⬜ next real feature |
+| 14 | Retry/sweep for `pending` rows, capped by `retry_count` | ⬜ |
+| 15 | Delete probe files | ⬜ |
+| 16 | Deploy (gunicorn) + WAL concurrency tuning | ⬜ |
+| 17 | Login timing side channel | ⬜ |
+| 18 | Password reset / email verification | ⬜ not started |
 
-### Files to delete (#5) — all throwaway, none are part of the app
+### Files to deal with (#15) — throwaway, none are part of the app
 
 ```
-probe_sqlite.py   probe_api.py   probe_none.py   probe_null.py (or prob_null.py)
-check_key.py
-show_db.py        ← keep only if you'll actually reuse it; decide on purpose
+probe_sqlite.py  probe_api.py  probe_none.py  probe_null.py (or prob_null.py)
+check_key.py     show_db.py    demo_import.py demo_name.py
 ```
+
+**But look at what deleting them costs.** `LEARNING_LOG.md` cites these files **by name as the
+proof** for §§1, 2, 7, 11, 13 and 18 — *"How I proved it (`probe_null.py`)"*. Delete them and
+the log cites evidence that no longer exists, in a repo where the reader cannot check any of
+it. The log would become a set of claims.
+
+That is the same failure this project keeps hitting, one level up: **an assertion is not
+evidence, and the remedy is a runnable artifact.**
+
+**Better than deleting: move them to `experiments/` and commit them.** ~8 small files that
+each demonstrate one concept, referenced from the log by relative path. They cost nothing,
+they run in under a second, and they turn the log from "things the mentor said" into "things
+you can re-run."
+
+`show_db.py` is the one genuine exception — it was a convenience, keep it only if you'll
+actually use it.
+
+`__pycache__/` and the `.db`/`.db-wal`/`.db-shm` files stay gitignored. That part is right.
 
 ---
 
-## 🔮 8. Open design questions (for later, not now)
+## 🔮 6. Open design questions
 
-1. **Retry needs state.** To cap retries ("try 3 times, then mark failed") the app must
-   remember how many times it tried. That needs a new column (`retry_count` /
-   `analysis_status`).
-2. **Adding a column breaks the template.** `index.html` uses *positional* indices —
-   `each_entry[2]`, `each_entry[3]`, `each_entry[5]`. Insert a column mid-schema and every
-   index shifts by one, **silently**. Fix by looking up `sqlite3.Row` (access columns by
-   name). Do this *before* adding columns, while there are only 2 rows to worry about.
-3. **Failures are not all alike.** `429`/`503`/network = transient → retry. `401` = global
-   config fault → retrying is pointless; *you* must fix the key. **Match the scope of the
-   response to the scope of the failure.**
-4. **The actual answer to "what if the key is bad":** it's an operator problem, not an
-   entry problem. (a) make it **visible** to the operator (logs/alerting — a `print()` in a
-   terminal you aren't watching is not visibility), and (b) keep a **recoverable backlog**.
-   **The `NULL` rows already ARE that backlog** — fix the key, sweep, everything catches up.
-5. `requirements.txt` is a full `pip freeze` including a whole Jupyter stack. It should be
-   trimmed to the app's real dependencies.
-6. `request.form["entry_text"]` raises `BadRequestKeyError` if the field is missing. No
-   validation on the form at all.
-7. `save_entry` has debug leftovers: `print(data)` (line 70) and the final `return` string.
+1. **`csrf_protect` is disabled in tests** (`CSRF_ENABLED = False`, named explicitly in
+   `config.py` rather than silently patched). This means it is the **least-verified code in
+   `auth.py`**. It needs its own test before signup is ever opened to the public.
+2. **The worker doesn't exist yet.** `analysis_status` and `retry_count` are columns waiting
+   for it. Today's flow is still synchronous: the request blocks on Groq.
+3. **Failures are not alike.** `429`/`503`/network are transient → retry. `401` is a global
+   config fault → retrying is pointless and would fire hundreds of calls that cannot help.
+4. **Match the scope of the response to the scope of the failure.** A missing Groq key costs
+   analysis, not entries — so the app boots and warns, rather than refusing to start.
+   Refusing to boot would turn a degraded feature into a total outage.
+5. `requirements.txt` was trimmed to real app deps; `requirements-dev.txt` carries `pytest`.
+6. **`current_user()` opens a database connection**, and it is called by `login_required`,
+   by the view, and by the template's nav. That's up to three queries per page load. Not
+   fatal at this size; it is the obvious thing to cache per-request later.
 
 ---
 
-## 🤖 9. On the model being probabilistic — observed, not asserted
+## 🤖 7. On the model being probabilistic — the accumulated evidence
 
-The **same entry text** was submitted twice. The model returned:
-
-| | mood_label | mood_score |
+| Observation | Same input? | Result |
 |---|---|---|
-| first submission | `'content'` | 8 |
-| second submission | `'motivated'` | 8 |
+| 09-21 | yes | `'content'` / 8, then `'motivated'` / 8 |
+| 09-30 | yes, ×4 | labels `sad`/`stressed`/`frustrated`/`stressed`; scores `3`/`4`/`4`/`4` |
+| 09-30 | yes | `reasoning` field **survives** `response_format=json_object` |
 
-Same input, different label. There is no `f(text) → label` mapping. Both readings are
-defensible. **Design accordingly:** never build logic that assumes a stable label for a
-given text, and never treat a disagreement between runs as a bug.
-
----
-
-## 🪞 10. The wrong prediction (worth remembering)
-
-Mid-session I asserted, confidently, that `app.run()` does **not** load `.env` and that
-`python app.py` would therefore fail to authenticate.
-
-**I was wrong.** From the installed source:
-
-```
-flask/app.py:546   def run(self, host=None, port=None, debug=None, load_dotenv: bool = True, ...)
-flask/app.py:623       if get_load_dotenv(load_dotenv):
-flask/app.py:624           cli.load_dotenv()
-```
-
-`app.run()` loads `.env` and defaults to on.
-
-**The lesson is not "the mentor was wrong." It is:**
-- A confident-sounding claim is **not** evidence — including mine.
-- When someone contradicts something you directly observed, **trust your observation** and
-  ask for their evidence.
-- The fix is mechanical: *show me the line of code, or run the experiment.*
-
-**And the meta-lesson:** my *recon* claim ("nothing loads `.env`") was correct and observed.
-My *follow-up* claim ("and `app.run()` wouldn't either") was invented and merely
-plausible-sounding. **Those are different things and must be labelled differently.**
+There is no `f(text) → label` mapping. **Never build logic that assumes a stable label for
+a given text, and never treat a disagreement between runs as a bug.**
 
 ---
 
-## 📝 11. Session closing ritual — 2026-09-21
+## 🪞 8. The wrong predictions (worth remembering)
 
-**1. What felt most unclear and now makes sense?**
-> "How to handle a problem with the API call so the whole program doesn't crash. It now
-> makes sense, and I realised all I needed to do was think deeply — the answer was there
-> all along."
+**2026-09-21 — the mentor, on `.env`.** Asserted confidently that `app.run()` does not load
+`.env`. Wrong; verified from installed source. *The lesson is not "the mentor was wrong" —
+it is that a confident-sounding claim is not evidence, including mine.*
 
-**2. What broke, and what did the error teach you?**
-> "The program crashing every time the API call threw an error. It taught me the importance
-> of catching exceptions and checking status codes."
+**2026-09-30 — the mentor, on the shell prompt.** Read `✗` in the user's zsh prompt as
+"last command exited non-zero" and stated it as fact. It was a **dirty-working-tree**
+indicator, and the disproof was already in the paste being read. *The same error as the
+first one: a plausible reading stated as an observation.*
 
-**3. Two sentences — what did you build?**
-> "The try-except block that catches exceptions and checks the status code, as well as
-> inserting and updating rows in the database."
-
-**4. What would you do differently next session?**
-> "I'll follow through more intentionally."
+**2026-09-30 — the user, on `reasoning`.** Predicted the `reasoning` field would vanish under
+`response_format=json_object`. Settled empirically: `keys inside message : ['content',
+'reasoning', 'role']`. **Only status code tells you a call failed; only dot-access tells you
+what's in the envelope.**
 
 ---
 
-## 💬 12. Pick up here tomorrow
+## 💬 9. Pick up here tomorrow
 
-> "I'm back. Read SESSION_NOTES.md. I'm building the startup API key check.
-> First question to settle: **where does it go so it runs under both `flask run` and
-> `python app.py`?** — given that `if __name__ == '__main__':` is skipped by `flask run`."
+> "I'm back. Read SESSION_NOTES.md. **First: run `python -m pytest tests/ -q`** — the auth
+> work has never been executed. If it fails, the code is wrong, not the test.
+>
+> Then: the CSRF test (#12), then the background analysis worker (#13) — a poller that
+> picks up `analysis_status='pending'` rows and caps retries with `retry_count`."
 
-**Also outstanding:** delete the probe files (#5), and check whether
-`git rm -r --cached venv` was committed (#6).
+**Also outstanding:** delete the probe files (#15), and remove the dead
+`probe_envelope.py` line from `.gitignore`.

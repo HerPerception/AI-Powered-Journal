@@ -103,9 +103,21 @@ def _migration_2_users_and_analysis_status(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_3_entry_owner_index(conn: sqlite3.Connection) -> None:
+    """Index entries by owner.
+
+    Every read of entries now carries `WHERE user_id = ?`. Without an index that
+    is a full table scan per page load -- fine at three rows, not fine at three
+    hundred thousand, and the fix is one line now versus a migration on a live
+    database later.
+    """
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_entries_user_id ON entries(user_id)")
+
+
 MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migration_1_baseline),
     (2, _migration_2_users_and_analysis_status),
+    (3, _migration_3_entry_owner_index),
 ]
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]

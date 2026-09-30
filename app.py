@@ -41,6 +41,8 @@ import os
 
 from flask import Flask
 
+from auth import bp as auth_bp
+from auth import csrf_protect, csrf_token, current_user
 from config import Config
 from journal import bp as journal_bp
 
@@ -77,7 +79,20 @@ def create_app(config_class: type = Config) -> Flask:
             "GROQ_API_KEY is not set. Entries will save, but none will be analysed."
         )
 
+    app.register_blueprint(auth_bp)
     app.register_blueprint(journal_bp)
+
+    # Exposed to every template, so each form can carry a token without every
+    # view having to pass one in. Forgetting to pass it would silently disable
+    # CSRF on that one form -- a per-route obligation is an obligation that gets
+    # missed.
+    app.context_processor(lambda: {"csrf_token": csrf_token, "current_user": current_user})
+
+    # A property of the app, not of each route. Registered here rather than as a
+    # blanket decorator on every view, because `before_request` applies to routes
+    # that do not exist yet.
+    app.before_request(csrf_protect)
+
     return app
 
 

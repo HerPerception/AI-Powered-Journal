@@ -1,0 +1,6 @@
+# Development and test dependencies. Not installed in production.
+#
+# Kept out of requirements.txt on purpose: gunicorn's image should not carry a
+# test runner, and requirements.txt is what a deploy reads.
+-r requirements.txt
+pytest==8.3.4

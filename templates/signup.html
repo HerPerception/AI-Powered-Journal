@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Sign up{% endblock %}
+
+{% block content %}
+<h1>Sign up</h1>
+
+<form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" autocomplete="username" required>
+
+    <label for="password">Password</label>
+    {#
+      autocomplete="new-password" rather than "current-password": it tells the
+      browser this is a signup, so it offers to generate and save a password
+      instead of filling in one you already have.
+    #}
+    <input type="password" id="password" name="password"
+           autocomplete="new-password" required>
+
+    <button type="submit">Create account</button>
+</form>
+{% endblock %}

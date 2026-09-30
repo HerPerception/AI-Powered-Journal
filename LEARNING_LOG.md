@@ -1,7 +1,12 @@
 # Learning Log — AI-Powered-Journal
 
 **Cumulative. Never overwritten, only appended to.**
-Covers the **2026-09-20** and **2026-09-21** sessions.
+Covers the **2026-09-20**, **2026-09-21**, **2026-09-22** and **2026-09-30** sessions.
+
+> **A note on line numbers.** Entries 1–24 cite `app.py` line numbers from before the app
+> factory existed. Those lines still exist, but in `journal.py`, `analysis.py` and `db.py`
+> now. The entries are left as written — the *reasoning* is what this file is for, and
+> rewriting history to match a refactor would hide that the code moved.
 
 > **How this differs from `SESSION_NOTES.md`:**
 > `SESSION_NOTES.md` = *where I am* (current state, next task). Rewritten each session.
@@ -53,6 +58,19 @@ Each entry has the same four parts:
 22. [Match the scope of the response to the scope of the failure](#22-match-the-scope-of-the-response-to-the-scope-of-the-failure)
 23. [A confident claim is not evidence](#23-a-confident-claim-is-not-evidence)
 24. [Design decisions are only proven by failure](#24-design-decisions-are-only-proven-by-failure)
+
+**Architecture**
+25. [An app factory makes "however you launch it" structural](#25-an-app-factory-makes-however-you-launch-it-structural)
+
+**LLMs, part 2**
+26. [Validate at the boundary, and collapse every failure into one type](#26-validate-at-the-boundary-and-collapse-every-failure-into-one-type)
+27. [Constraining the response format does not constrain the envelope](#27-constraining-the-response-format-does-not-constrain-the-envelope)
+28. [A defined range is an anchor; an undefined one is an invitation](#28-a-defined-range-is-an-anchor-an-undefined-one-is-an-invitation)
+29. [Banning a form does not remove an intent](#29-banning-a-form-does-not-remove-an-intent)
+
+**Security & correctness**
+30. [Privacy failures are silent — so isolation must be structural *and* tested](#30-privacy-failures-are-silent--so-isolation-must-be-structural-and-tested)
+31. [A test that can pass for the wrong reason is not a test](#31-a-test-that-can-pass-for-the-wrong-reason-is-not-a-test)
 
 ---
 
@@ -749,5 +767,300 @@ exception escapes.
 
 ---
 
-*Last updated: 2026-09-21.*
-*Next concepts to append: the startup key check, and the `NULL`-row sweep.*
+# Architecture
+
+## 25. An app factory makes "however you launch it" structural
+
+**What it means.** A module-level `app = Flask(__name__)` is created once, at import, and
+whatever you put *around* that line runs for every launcher. But whatever you put in
+`if __name__ == "__main__":` runs for exactly one of them — the one where you typed
+`python app.py`.
+
+An **app factory** replaces the module-level object with a function that builds and returns
+it. Every launcher calls the function, so everything inside it applies identically to all of
+them, and there is no longer a category of "code that only runs under some launchers."
+
+**How I proved it.** `debug=True` sat in the `__main__` block, so the same file launched two
+ways produced two different servers:
+
+```
+python app.py          flask run
+---------------        --------------
+Debug mode: on         Debug mode: off
+Restarting with stat   (absent)
+Debugger is active!    (absent)
+Debugger PIN: 115-...  (absent)
+```
+
+After the factory, both launch paths were run and produced the same configuration, and the
+queued "where does the startup key check go?" question dissolved — it goes in
+`create_app()`, because `create_app()` is the one function every path calls.
+
+**The trap — and this is the real lesson, not the Flask one.** This was the **fourth**
+occurrence of one shape:
+
+| # | Thing that had to run under every launcher | How it was fixed |
+|---|---|---|
+| 1 | `connect_db()` | called in every route — a patch per call site |
+| 2 | `.env` loading | turned out to be fine (`app.run()` does load it) |
+| 3 | startup key check | queued, unsolved |
+| 4 | `debug=True` | **the factory — category dissolved** |
+
+Fixing #1, #2 and #4 individually would have meant fixing #5, #6 and #7 the same way. The
+factory doesn't answer the question; it deletes it. **When the same bug arrives for the
+fourth time, stop fixing the instance and change the shape that keeps producing it.**
+
+**Where it lives.** `app.py` — `create_app()`, and a `__main__` block reduced to "start a dev
+server on this machine", the only thing that legitimately differs.
+
+---
+
+# LLMs, part 2
+
+## 26. Validate at the boundary, and collapse every failure into one type
+
+**What it means.** Two separate ideas that belong together.
+
+**(a) Validate at the boundary.** Model output is not a value you can trust — it is text you
+have to *check* before it enters the deterministic part of your program. A schema is where
+that check happens: once data passes it, the rest of the code can treat it as the type it
+claims to be.
+
+**(b) Collapse failures.** If a layer can fail nine ways, its caller must be able to catch
+nine things — and will catch seven, because nobody remembers all nine. Funnel every failure
+into **one exception type** and the caller has exactly one thing to catch.
+
+**How I proved it.** The old code caught only `requests.exceptions.RequestException`, which
+is raised by the **transport** layer. Every failure *after* the bytes arrived — JSON parsing,
+key lookup, validation — escaped it and became a `500`, even though the journal entry had
+already been saved successfully.
+
+| # | Failure | Caught by the old code? |
+|---|---|---|
+| a | Groq replies with an error | ✅ `status_code != 200` |
+| b | Groq never replies | ✅ `except RequestException` |
+| c | Connection hangs | ✅ `timeout=10` |
+| d | **Bytes arrived, but they're wrong** | ❌ **escaped → 500** |
+
+Every test in that table had been written for a, b and c. Nobody wrote one for d, because d
+is not a *network* problem — it's a *content* problem, and the code was organised around
+network problems.
+
+**The trap.** `except RequestException` reads like it catches "the API call failing." It
+catches "the API call failing *in transit*." Those are different sentences and only one of
+them is true. **A broad-sounding exception name is not a broad exception.**
+
+**Where it lives.** `analysis.py` — `AnalysisError` plus the Pydantic `MoodAnalysis` model.
+`journal.py` catches exactly one type.
+
+---
+
+## 27. Constraining the response format does not constrain the envelope
+
+**What it means.** `response_format={"type": "json_object"}` tells the model to reply with
+JSON *inside the message content*. It does not change the **envelope** around that content —
+you still get a full chat-completion object, and you still have to navigate into it.
+
+**How I proved it** (`probe_envelope.py`):
+
+```
+keys inside message : ['content', 'reasoning', 'role']
+```
+
+Prediction before running: the `reasoning` field would vanish, since JSON mode should mean
+"just JSON". **It didn't.** `content` and `reasoning` are siblings; JSON mode constrains one
+of them.
+
+**The trap.** "I asked for JSON, so the response is JSON" conflates two layers. The
+*constraint* governs what the model writes; the *envelope* is the API's structure and is not
+yours to negotiate. Code that does `response.json()["mood_label"]` is one layer short.
+
+Corollary, from §7: **`response.json()` succeeds on a `401`**, because an error body is valid
+JSON too. Status code is the only success signal; the envelope is only meaningful once the
+status says there is a success to describe.
+
+**Where it lives.** `analysis.py` — `payload["choices"][0]["message"]["content"]`, with
+`KeyError`/`IndexError`/`TypeError` caught and re-raised as `AnalysisError`.
+
+---
+
+## 28. A defined range is an anchor; an undefined one is an invitation
+
+**What it means.** The model's output is stable exactly where the prompt **defines the space
+of possible answers**, and unstable where it doesn't.
+
+**How I proved it.** The same entry text was submitted **four times**:
+
+| run | mood_label | mood_score |
+|---|---|---|
+| 1 | `sad` | 3 |
+| 2 | `stressed` | 4 |
+| 3 | `frustrated` | 4 |
+| 4 | `stressed` | 4 |
+
+The label moved across three different words. The score stayed within one point of itself.
+
+**Why the difference?** The prompt said:
+
+> *"mood_score: an integer from 1 to 10, where 10 represents very positive feelings and 1
+> represents very negative feelings."*
+
+It defined the scale. It never said what words were allowed for `mood_label` — so the model
+reached for a fresh synonym each time, and every one of those readings was defensible.
+
+**The fix.** A closed vocabulary, defined exactly once:
+
+```python
+MoodLabel = Literal["happy", "calm", "content", "motivated", "neutral", "tired",
+                    "anxious", "stressed", "frustrated", "sad", "angry"]
+MOOD_LABEL_VALUES = get_args(MoodLabel)
+```
+
+The prompt text is built from `MOOD_LABEL_VALUES` and the validator uses `MoodLabel`, so
+they are derived from one definition and **cannot drift apart**.
+
+**The trap, and the honest caveat.** Closing the set buys two things, and only one is about
+variance:
+
+1. Less variance — the space of possible answers is now small and named.
+2. **The label becomes groupable.** Free-text labels cannot be counted or charted. Eleven
+   spellings of "anxious" are eleven series on a graph.
+
+(2) is the thing you can actually rely on. (1) is suggested by n=4 — an observation, not a
+measurement. It says the variance was real and that this fix targets the right cause; it does
+not say the variance is gone.
+
+**Where it lives.** `analysis.py`.
+
+---
+
+## 29. Banning a form does not remove an intent
+
+**What it means.** A prompt rule forbids a *behaviour*. The model can satisfy the letter of
+the rule while still performing the behaviour in a different shape. Negative instructions are
+weaker than they look, because the model has to represent the forbidden thing in order to
+avoid it — and that representation is right there when it writes.
+
+**How I proved it.** The prompt was rewritten to forbid advice:
+
+> *"- Do not give advice, instructions, or recommendations.*
+> *- Do not ask a question that suggests an action, technique, or next step."*
+
+The next response ended with:
+
+> *"What small step could help you start moving forward?"*
+
+**That is advice. It has a `?` on the end.** The rule banned the *declarative* form of
+advice and the model re-delivered it in the interrogative. The prompt was then tightened to
+name the shape explicitly — *"Asking 'what small step could you take?' is advice wearing a
+question mark"* — which is the pattern: **when a rule fails, don't repeat it louder; name the
+specific evasion.**
+
+**The other half of the finding.** Run 1 predated **both** prompt edits, and it *already*
+advised and *already* offered presence ("I'm here for you"). So this is not a behaviour the
+prompt caused. It is the model's **default disposition** for a journaling task — the
+assistant persona is trained in and arrives uninvited. Prompt rules reduce it. They do not
+guarantee its absence.
+
+**Which is why the crisis line is not a prompt instruction.** A line that says "mention
+crisis resources if appropriate" is a *probability* — missable, arguable, degradable by an
+unusual entry. So the crisis line is **static HTML that no model generates**. It cannot fail,
+because there is nothing in it that can fail. It lives in `base.html`, so every page inherits
+it by extending and a page added later gets it for free.
+
+**Where it lives.** `analysis.py` (the prompt and its rules), `templates/base.html` (the line
+the model cannot touch).
+
+---
+
+# Security & correctness
+
+## 30. Privacy failures are silent — so isolation must be structural *and* tested
+
+**What it means.** A crash announces itself. A privacy bug does not: the page renders, the
+request is a `200`, and the only symptom is that someone is reading a stranger's diary and
+neither of them knows. There is no error to notice.
+
+Because there is no symptom, isolation cannot rest on remembering to write `WHERE user_id = ?`
+correctly on every query, forever, including in the route someone adds in six months.
+
+**How it's built.** Two rules, both stated once in `journal.py`:
+
+1. Every journal route has `@login_required`.
+2. Every query touching entries carries `WHERE user_id = ?`.
+
+And the asymmetry that makes (2) the one to worry about:
+
+> **A missing login check gives you a redirect you notice. A missing `WHERE` gives you
+> someone else's diary and no error at all.**
+
+**How it's proved.** `tests/test_isolation.py`: two users, one entry each, assert each sees
+only their own. And its **precondition** asserts both rows really are in the table, owned by
+two different users — see §31 for why that part is the point.
+
+**The trap.** "We're careful" is not a mechanism. A rule that depends on remembering is a
+rule that will be forgotten — the same failure shape as `UPDATE` without `WHERE` (§14), and
+the same fix: make it a property of the *structure*, then make a test fail the build when it
+breaks. The CSRF check is registered as `before_request` for exactly this reason: it applies
+to routes that do not exist yet, so nobody has to remember it.
+
+**Where it lives.** `journal.py`, `auth.py`, `app.py`, `tests/test_isolation.py`.
+
+---
+
+## 31. A test that can pass for the wrong reason is not a test
+
+**What it means.** An assertion proves something only if the *only* way to reach it is the
+thing you meant to test. If a broken system can also satisfy it, the test is green and
+worthless — worse than no test, because it buys confidence it hasn't earned.
+
+**How I proved it — by construction.** The obvious isolation test is:
+
+```python
+body = client.get("/").get_data(as_text=True)
+assert "BBBB entry" in body
+assert "AAAA entry" not in body
+```
+
+But `assert "AAAA entry" not in body` **also passes on an empty database**, where saving is
+broken and nothing was ever written. "Not visible" and "not there" are different claims, and
+only one of them is privacy. The test would be green with the isolation completely absent.
+
+So the test asserts the precondition first:
+
+```python
+rows = conn.execute("SELECT text, user_id FROM entries ORDER BY id").fetchall()
+assert [row["text"] for row in rows] == ["AAAA secret diary", "BBBB secret diary"]
+assert None not in {row["user_id"] for row in rows}     # nothing is ownerless
+assert len({row["user_id"] for row in rows}) == 2        # two owners, not one
+```
+
+Now the absence of A's entry from B's page means what it says.
+
+**The same pattern, applied again.** `test_anonymous_visitor_cannot_post_an_entry` checks the
+`302` **and** that the table is still empty:
+
+```python
+assert response.status_code == 302
+assert count == 0
+```
+
+The redirect alone would also pass if the decorator ran *after* the handler — saving the data
+and then redirecting. The count is what distinguishes "was blocked" from "was allowed and
+then tidied up."
+
+**The trap.** A test written to confirm what you just built tends to confirm it. Ask of every
+assertion: **what else could make this true?** If the answer isn't "nothing", add the
+assertion that rules the others out.
+
+**Where it lives.** `tests/test_isolation.py`.
+
+> **Honest status:** this file has never been executed. The shell was unavailable when it
+> landed. Everything above is *believed*, not *observed* — which is precisely the distinction
+> §23 says must be labelled.
+
+---
+
+*Last updated: 2026-09-30.*
+*Next concepts to append: the background analysis worker, the `pending`-row sweep, and
+whatever the first test run teaches (which is not yet known).*

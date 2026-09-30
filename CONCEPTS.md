@@ -1,44 +1,65 @@
 # Concepts — Quick Reference
 
-Brief definitions of everything used in this project, tied to the file and line where
-it appears. **For the long version — evidence, traps, reasoning — see `LEARNING_LOG.md`.**
+Brief definitions of everything used in this project, tied to the file where it appears.
+**For the long version — evidence, traps, reasoning — see `LEARNING_LOG.md`.**
 
-Line numbers match `app.py` / `templates/index.html` as of 2026-09-22.
+File references are by **module**, not line number. Line numbers drifted every session and
+made this file rot; module names survive refactors.
 
 ---
 
 ## A. Request lifecycle (Flask)
 
 **Route / decorator**
-`@app.route("/", methods=["POST"])` binds a URL + HTTP method to a function. Flask calls that
-function when a matching request arrives. `app.py:26, 38`
+`@bp.route("/", methods=["GET"])` binds a URL + HTTP method to a function. `journal.py`
 
 **The lifecycle**
-Browser → request → route → function runs → returns a value → Flask turns it into an HTTP
-response → browser renders it. Nothing in a view function talks to the browser directly.
+Browser → request → `before_request` hooks → route → function runs → returns a value → Flask
+turns it into an HTTP response → browser renders it. Nothing in a view talks to the browser
+directly.
 
-**`request.form["entry_text"]`**
-Reads a submitted form field by the `name` attribute it was given. **Raises
-`BadRequestKeyError` if the field is absent entirely** — which is *not* the same as empty.
-`app.py:40`
+**Blueprint**
+A named group of routes. `bp = Blueprint("journal", __name__)`. The name becomes the
+endpoint prefix: `url_for("journal.index")`. Lets routes live in their own module instead of
+all piling into `app.py`. `journal.py`, `auth.py`
 
-**Two layers of validation**
-`required` on the `<textarea>` is client-side — the browser blocks empty submits. It is
-bypassable (curl, devtools). `len(user_entry) == 0` is server-side and is the real check.
-Both are useful; only the server one is a guarantee. `app.py:41`, `index.html:18`
+**App factory**
+`create_app()` builds and returns the app, instead of a module-level `app = Flask(__name__)`.
+Every launch path — `flask run`, `gunicorn`, `python app.py` — calls it, so configuration
+inside it applies identically to all three. `app.py`
 
-**`400 Bad Request`**
-The status meaning "your input was wrong" — the user *can* fix this one, unlike a `502`.
-`app.py:42`
+**`before_request`**
+A function that runs before *every* request, registered once on the app. Used here for CSRF.
+A per-route obligation is an obligation that gets forgotten; this one applies to routes that
+do not exist yet. `app.py`
+
+**`context_processor`**
+Injects values into every template's context, so each view doesn't have to pass them.
+`csrf_token` and `current_user` are exposed this way. `app.py`
 
 **`if __name__ == "__main__":`**
 Runs only when the file is executed **directly**. `flask run` **imports** the file instead,
-so `__name__` is `"app"` and this block is **skipped**. Code that must always run cannot
-live here. `app.py:103`
+so `__name__` is `"app"` and this block is **skipped**. `app.py` — now contains nothing but
+"start a dev server on this machine", which is the only thing that legitimately differs
+between launch paths.
 
 **`app.run(debug=True)`**
-Starts Flask's development server. `debug=True` adds auto-reload on save and an interactive
-traceback page. Development only — never production.
+Dev server. `debug=True` adds auto-reload and an interactive traceback page. The Werkzeug
+debugger console is **remote code execution**, guarded only by a PIN printed to a terminal —
+so debug defaults to OFF and must be opted into. Never production.
+
+**`request.form.get("entry_text")`**
+Reads a submitted field by its `name` attribute. **`.get()` not `["entry_text"]`** — the
+subscript form raises `BadRequestKeyError` when the field is absent, turning a bad request
+into a crash. `journal.py`, `auth.py`
+
+**Two layers of validation**
+`required` on the `<textarea>` is client-side — bypassable with curl. The server-side check
+is the real one. Both are useful; only the server one is a guarantee.
+
+**Status codes**
+`200` OK · `302` redirect · `400` your input was wrong · `401` your key is bad · `403`
+forbidden · `429` rate limited · `500` *I* am broken · `502` *the thing behind me* is broken.
 
 ---
 
@@ -46,182 +67,202 @@ traceback page. Development only — never production.
 
 **`sqlite3.connect("journal.db")`**
 Opens the database at that path, creating a **0-byte file** if it doesn't exist. That file is
-a path, not yet a database — it holds nothing until a `CREATE TABLE` runs.
+a path, not yet a database.
 
-**`CREATE TABLE IF NOT EXISTS`**
-Creates the table only if absent → safe to run on every request. **This** is what turns the
-0-byte file into a real database. `app.py:13-22`
+**`row_factory = sqlite3.Row`**
+Makes rows readable by **column name** as well as position. This is what retired the
+`each_entry[2]` fragility. `db.py`
 
-**Connection vs Cursor**
-**Connection** = the pipe to the file (`.execute()`, `.commit()`, `.close()`).
-**Cursor** = runs queries and holds rows (`.fetchall()`, `.fetchone()`, `.lastrowid`).
-A Connection has **no** `fetchall()`. `connect_db()` returns a *Connection*.
+**`PRAGMA user_version`**
+SQLite's built-in schema version counter. `migrate()` reads it, applies any migration
+numbered above it, and writes the new version. `db.py`
+
+**Migrations are append-only**
+Each migration takes version N−1 → N. **Never edit one that has shipped** — editing an
+applied migration means two databases claiming the same version have different shapes. If
+it's wrong, add a new one that corrects it. `db.py`
+
+**`ALTER TABLE ADD COLUMN` appends**
+New columns go on the end, so existing column *order* is preserved. Positional indices
+survive — which is why `index.html`'s old `each_entry[2]/[3]/[5]` kept working through
+migration 2. A table rebuild would reorder and break it silently. `db.py`
+
+**`PRAGMA journal_mode = WAL`**
+Lets readers proceed alongside one writer. Without it, gunicorn workers plus a background
+worker on the same file start returning "database is locked". Paired with `timeout=5.0` so a
+blocked writer waits rather than failing. `db.py`
 
 **`?` placeholders**
-Parameterized queries. The values travel separately from the SQL text, so a value can never
-be interpreted as SQL. This is what prevents SQL injection. `app.py:47-48`
+Parameterized queries. Values travel separately from the SQL text, so a value can never be
+interpreted as SQL. This is what prevents SQL injection.
 
 **`commit()`**
-Makes a write durable and visible to **other connections**. Without it, a second connection
-to the same file sees nothing. `app.py:51, 97`
+Makes a write durable and visible to **other connections**.
 
 **`cursor.lastrowid`**
-The id of the row just inserted — how you know which row to `UPDATE`. **Readable only until
-the connection closes.** Capture it before `conn.close()`. `app.py:50`
+The id of the row just inserted. **Readable only until the connection closes.** Capture it
+before `conn.close()`. `journal.py`
 
-**`INSERT INTO ... VALUES`**
-Adds a **new** row. `app.py:47-48`
+**`UPDATE ... SET ... WHERE id = ? AND user_id = ?`**
+The `user_id` clause is redundant today — the id came from our own `INSERT` one function
+above. It is there because "provably mine" is a property of the *current code*, not of the
+statement. If `entry_id` ever arrives from a form field, the version without it is already a
+breach and this version is already correct. `journal.py`
 
-**`UPDATE ... SET ... WHERE id = ?`**
-Changes an **existing** row. Columns not named keep their old values.
-**⚠️ Omit `WHERE` and every row in the table is overwritten — silently, no undo.**
-`app.py:93-95`
-
-**`SELECT * FROM entries`**
-Reads all rows. Columns come back in **schema order** — which is what makes the template's
-positional indices work. `app.py:32`
+**⚠️ `UPDATE` without `WHERE` overwrites every row.** Silently, no undo.
 
 **`None` → `NULL`**
-Python's `None` is stored as SQL `NULL`. Same value, two names. `app.py:48`
+Python's `None` is stored as SQL `NULL`. Same value, two names.
 
 **Three-valued logic**
 SQL comparisons return **TRUE, FALSE, or UNKNOWN**. Anything compared to `NULL` is
-**UNKNOWN** — not FALSE. `WHERE` keeps only TRUE rows, so **`NULL` rows silently vanish**
-from comparisons (no error, no warning).
+**UNKNOWN**, and `WHERE` keeps only TRUE rows — so `NULL` rows **silently vanish** from
+comparisons.
 
 **`IS NULL` vs `= NULL`**
-`x = NULL` always evaluates to UNKNOWN, so it matches nothing, ever. Only `IS NULL` /
-`IS NOT NULL` work.
+`x = NULL` is always UNKNOWN, so it matches nothing, ever.
 
 **`NULL` ≠ `''`**
-`NULL` = "unknown — never computed." `''` = "known, and the answer was blank."
-Conflating them makes un-analyzed rows **indistinguishable** from genuinely-blank results,
-so `WHERE mood_label IS NULL` — the retry queue — could not exist. `app.py:48`
+`NULL` = "unknown — never computed." `''` = "known, and the answer was blank." Conflating
+them kills `WHERE mood_label IS NULL` — which is the retry queue.
 
-**`INTEGER PRIMARY KEY AUTOINCREMENT`**
-The `id` column: a unique, never-reused row identifier. `app.py:15`
-
-**`fetchall()` / `fetchone()`**
-All rows as a list of tuples / the next row as one tuple. `app.py:33`
+**Index on `entries.user_id`**
+Every read now filters by owner. Without the index that's a full table scan per page load.
+Migration 3. `db.py`
 
 ---
 
 ## C. Talking to the model (HTTP + LLM)
 
 **`requests.post(url, headers=, json=, timeout=)`**
-Sends an HTTP POST with a JSON body. `app.py:58-69`
+HTTP POST with a JSON body. `analysis.py`
 
 **`Authorization: Bearer <key>`**
-How the API key is presented to Groq. `app.py:60`
-
-**`os.environ.get("GROQ_API_KEY")`**
-Reads the key from the environment. Returns `None` if unset — which produces
-`Bearer None` and a `401` identical to a wrong key. `app.py:53`
-
-**`.env` + `python-dotenv`**
-`.env` holds the key; Flask calls `load_dotenv()` at startup **if python-dotenv is
-installed**, so the key reaches `os.environ`. Verified in `flask/app.py:623-624`.
+How the API key is presented. A missing key produces `Bearer None` → `401` **identical to a
+wrong key** — which is why a missing dependency can masquerade as a bad credential.
 
 **`timeout=10`**
-Gives up after 10 seconds and **raises**. Without it, a hung connection waits forever and
-the user's browser spins. `app.py:68`
-
-**Status codes**
-`200` OK · `400` your input was wrong · `401` your key is bad · `429` rate limited ·
-`500` *I* am broken · `502` *the thing behind me* is broken.
+Gives up after 10 seconds and **raises**. Without it a hung connection waits forever and the
+browser spins.
 
 **`response.status_code`**
-The **only** reliable success signal. `app.py:75`
+The **only** reliable success signal.
 
 **`response.json()`**
-Parses the body. **Succeeds even on an error response**, because error bodies are valid
-JSON (`{"error": {...}}`). **Never use it to detect failure.** `app.py:79`
-
-**`data["choices"][0]`**
-The trap: on failure the body has only an `error` key, so this raises `KeyError: 'choices'` —
-an error that points at the wrong place entirely. `app.py:81`
+Parses the body. **Succeeds even on an error response**, because error bodies are valid JSON
+(`{"error": {...}}`). Never use it to detect failure.
 
 **`except requests.exceptions.RequestException`**
-`RequestException` is the **parent** of every error `requests` raises (`ConnectionError`,
-`Timeout`, `HTTPError`, …), so one clause catches HTTP errors, network failures, and
-timeouts together. `app.py:70-72`
+The **parent** of every error `requests` raises, so one clause catches HTTP errors, network
+failures, and timeouts. But it is the **transport** layer's exception — it catches nothing
+that happens *after* the bytes arrive. `analysis.py`
 
-**`return "...", 502`**
-Returning two values sets both the body and the status code. A bare string defaults to
-**200 OK** — the status you get by not choosing. `app.py:72, 77`
+**`AnalysisError`**
+The single exception type every failure funnels into: transport, bad status, unexpected
+envelope, unparseable content, and content that parses but is wrong. The caller catches
+exactly one thing and cannot accidentally let a new failure mode through. `analysis.py`
 
-**Two scopes of failure**
-`401` is a **global config fault** — only the operator can fix it; retrying is pointless.
-`429`/`503`/network are **transient** — retrying helps. Match the response to the scope.
-`app.py:75-77`
+**`response_format={"type": "json_object"}`**
+Groq's JSON mode. **It constrains the content, not the envelope** — the response is still a
+full chat-completion object with `choices[0].message`, and the model's thinking still arrives
+in the sibling `reasoning` field. `analysis.py`
 
-**Fast vs slow model output**
-`openai/gpt-oss-20b` returns clean JSON in `content` and its thinking in a separate
-`reasoning` field. Older models embedded thinking in `content` inside `</think>` tags —
-which is what the `.replace()` calls below were patching. `app.py:84-85`
+**`message.content` vs `message.reasoning`**
+Sibling fields. `content` holds the JSON; `reasoning` holds the thinking. Older models
+embedded thinking *inside* `content` in `</think>` tags, which is what the old `.replace()`
+band-aids were patching. Those are dead code for the current model.
+
+**`_extract_json_object()`**
+Finds the outermost `{` … `}` in whatever came back, so prose before or after the object, or
+markdown fences around it, all survive. It looks for the **structure** instead of patching a
+specific string. Still raises if there is no object at all — that case is something to
+report, not paper over. `analysis.py`
 
 **`.replace("```json", "")` — band-aids**
-Each line patches **one specific historical failure mode** and nothing else. They're dead
-code for the current model. `app.py:84-85`
-
-**`json.loads()`**
-Parses the model's text into a Python dict. **The output is never guaranteed to match the
-shape you asked for** — the model is probabilistic. `app.py:86`
+Each patches **one specific historical failure mode**. Every band-aid is a bet the model
+won't fail a different way tomorrow.
 
 ---
 
-## D. Template (Jinja + HTML)
+## D. Validating model output (Pydantic)
 
-**`{{ }}` / `{% %}`**
-`{{ }}` outputs an expression. `{% %}` runs a statement (`for`, `if`). `index.html:8-15`
+**`BaseModel`**
+Declares the shape you require and **enforces** it: coerces `"8"` → `8`, rejects `8.5`,
+rejects a missing key, rejects an empty string. Anything that survives is safe to store.
+`analysis.py`
 
-**`render_template("index.html", entries=entries)`**
-Renders a Jinja template with the given variables. `app.py:36`
+**`Field(ge=, le=, min_length=, max_length=)`**
+Numeric and length bounds, checked by the model rather than by hand-written `if`s.
 
-**Jinja runs on the server, first**
-The browser never receives your template — only the finished HTML. Anything that must
-happen before the browser sees the page happens in Jinja. `app.py:36`
+**`ValidationError`**
+Raised when the data doesn't match. Caught and re-raised as `AnalysisError`, so the caller
+still only catches one type.
 
-**HTML comments don't hide Jinja**
-`<!-- -->` is a message to the **browser**. Jinja renders first and ignores it, so
-`{% %}` tags **inside** an HTML comment still execute. To comment out Jinja use `{# #}`.
+**`model_validate_json()`**
+Parse-and-validate in one step, from a string.
 
-**`or ""`**
-`None or ""` → `""`. Converts a `NULL` mood into nothing, instead of Jinja printing the
-literal word `None`. **Storage says "unknown"; display shows nothing.** `index.html:10-12`
+**`@field_validator(mode="before")`**
+Runs **before** the type's own checks. Load-bearing for `mood_label`: the default `"after"`
+mode runs the `Literal` membership test *first*, so `" Stressed"` — stray space, capital —
+would be rejected before anything tidied it up. **Normalise, then check membership.**
+`analysis.py`
 
-**Positional indices are fragile**
-`each_entry[2]` means "the 3rd column of `SELECT *`". Add or reorder a column and every
-index shifts — **silently**, with no error. `sqlite3.Row` would let you use column names.
-`index.html:10-12`
-
-**`<textarea name="entry_text">`**
-The `name` attribute is the dict key that arrives in `request.form`.
-
-**`required`**
-Client-side validation. Convenience, not security. `index.html:18`
+**`Literal[...]` + `get_args()`**
+A closed set of allowed values, and the tuple of those values at runtime, so the prompt text
+and the validator are **derived from one definition** and cannot drift apart. `analysis.py`
 
 ---
 
-## E. Python mechanics
+## E. Accounts & sessions
 
-**`import` RUNS the file**
-Top-to-bottom, at the import line, side effects included. It does not "look up" a file.
+**Session cookie**
+Client-held and **signed, not encrypted**. It is a claim about who you are, not proof. Never
+put anything in it you'd be unhappy to see forged. `auth.py`
 
-**Indentation is ownership**
-A line pushed right belongs to the line above it. An extra space is an `IndentationError`
-before any code runs.
+**`session.clear()` before storing the user id on login**
+**Session fixation.** Without it, an attacker who plants a session cookie in your browser
+before you log in keeps the same session id after you log in — and therefore keeps your
+logged-in session. `auth.py`
 
-**Exceptions travel upward**
-An uncaught exception exits your function, exits the route, and Flask turns it into a
-`500`. `try`/`except` is a net that catches it earlier.
+**`current_user()`**
+Looks the user up from the database on every call rather than trusting a copy in the session.
+Returns `None` when logged out. `auth.py`
 
-**f-strings**
-`f"Bearer {api_key}"` interpolates a value into a string. `app.py:60`
+**`@login_required`**
+Decorator that redirects to the login page when `current_user()` is `None`. The decorator
+must run **before** the handler, not merely produce a redirect after it — otherwise the
+handler saves the data and then redirects. `auth.py`, `journal.py`
 
-**`str(datetime.now())`**
-A timestamp as text. Set at line 43, so it records **submission** time, not analysis time.
-`app.py:43`
+**`generate_password_hash` / `check_password_hash`**
+Werkzeug's password hashing. **Never store a password.** Store a hash; compare hashes.
+
+**`sqlite3.IntegrityError` on a `UNIQUE` column**
+Checking "does this email exist?" and *then* inserting is a race — two simultaneous signups
+both pass the check. Let the `UNIQUE` constraint enforce it and catch the failure. `auth.py`
+
+**One message for both login failures**
+Wrong password and unknown email produce the same reply. Distinguishing them is a free
+account-enumeration oracle. `auth.py`
+
+**CSRF**
+A per-session token in a hidden form field, checked against the session on every
+state-changing request. Without it, a third-party page can submit your forms as you. `auth.py`
+
+**`secrets.compare_digest()`**
+**Constant-time** comparison. `==` short-circuits on the first differing byte, leaking the
+token one byte at a time to anyone who can measure response time. `auth.py`
+
+**Logout is POST, not GET**
+A GET logout fires from any `<img>` tag on any site. `auth.py`
+
+**Closed-by-default signup**
+`ALLOW_PUBLIC_SIGNUP` is off unless set. The safe state is the default, and going public is
+one env var rather than a code change. `config.py`
+
+**Isolation is structural, and tested**
+Every journal route has `@login_required`; every entries query has `WHERE user_id = ?`. A
+missing login check gives you a redirect you notice — **a missing `WHERE` gives you someone
+else's diary and no error at all.** Hence `tests/test_isolation.py`.
 
 ---
 
@@ -229,46 +270,71 @@ A timestamp as text. Set at line 43, so it records **submission** time, not anal
 
 **A venv is a folder + `pyvenv.cfg`**
 The marker file is the only thing that makes Python treat the folder as a venv. Without it,
-`venv/bin/python` (a symlink to the system Python) silently uses the **system** packages —
-producing `ModuleNotFoundError` for a package you can see on disk.
+`venv/bin/python` silently uses the **system** packages — `ModuleNotFoundError` for a package
+you can see on disk.
 
 **Activation ≠ configuration**
-`(venv)` in your shell prompt only means your **shell** knows the path. It says nothing
-about which packages your **interpreter** uses.
+`(venv)` in your prompt only means your **shell** knows the path.
 
-**`requirements.txt` vs the venv**
-`requirements.txt` is durable, tiny, and committable. The venv is disposable,
-machine-specific, and must never be committed.
+**`load_dotenv()` at module top**
+Flask's CLI loads `.env` and `app.run()` does too — **gunicorn does neither**. Relying on the
+launcher means "is the key present?" depends on how you started the app: works in every local
+test, silently absent in production. One explicit call makes three launchers one code path.
+`config.py`
+
+**`os.environ` is read in exactly one file**
+If values are read in many places, what you get depends on *where* it was read — which is
+precisely how the two-launch-path bug happened. `config.py`
 
 **`.gitignore` doesn't untrack**
 It only stops **new** files. Already-tracked files keep being tracked until
-`git rm -r --cached <path>` — which removes them from the index and **keeps them on disk**.
+`git rm -r --cached <path>`.
 
-**`journal.db` is gitignored**
-It's local data, recreated automatically by `connect_db()`. `.gitignore:1`
-
-**The app's real dependencies**
-`Flask` and `requests` (plus their transitive deps). `requirements.txt` is currently a full
-`pip freeze` including an entire Jupyter stack — it should be trimmed.
+**A freeze records what IS installed**
+Not what should be. Hand-adding a package to `requirements.txt` without installing it makes
+the file lie in the opposite direction — and that is how `python-dotenv` came to be missing
+while the app ran fine on the machine where it had been installed by hand.
 
 ---
 
 ## G. Design decisions (the "why", in one line each)
 
-**Save first, analyze second**
-`INSERT` with `NULL` mood → call the API → `UPDATE` the same row. Everything between the
-first `commit()` and the `UPDATE` can fail — network, key, timeout, killed process. Saving
-first means **the writing is on disk before the network is ever touched.** `app.py:41-97`
+**Save first, analyse second**
+`INSERT` with `NULL` mood → call the API → `UPDATE` the same row. Everything between can
+fail — network, key, timeout, killed process. Saving first means **the writing is on disk
+before the network is ever touched.** `journal.py`
 
 **`NULL` is the retry queue**
-Rows whose analysis failed stay `NULL` and are findable with
-`SELECT * FROM entries WHERE mood_label IS NULL`. Fix the cause, sweep, everything catches up.
+`analysis_status='pending'` rows are findable and recoverable. Fix the cause, sweep,
+everything catches up. This only works because of two earlier decisions: save before the API
+call, and store `None` instead of `''`.
+
+**Match the response to the scope of the failure**
+`SECRET_KEY` missing → fatal, nobody can log in. `GROQ_API_KEY` missing → warning, one
+feature degrades. Refusing to boot over a recoverable fault turns a degraded feature into a
+total outage. `app.py`
 
 **Log the detail, show a summary**
-`print()` the `401`/`503` for yourself; show the user one plain sentence. An error they
-can't act on shouldn't be shown to them in detail. `app.py:71, 76`
+`app.logger.warning` the `401` for yourself; show the user one plain sentence. An error they
+can't act on shouldn't be shown to them in detail.
+
+**A closed vocabulary beats a hopeful prompt**
+The prompt *defined* the score's 1–10 scale, so scores were stable across runs. It never
+defined the label's vocabulary, so labels weren't. **A defined range is an anchor; an
+undefined one is an invitation.** `analysis.py`
+
+**Banning a form does not remove an intent**
+A prompt rule against advice did not stop advice — it came back as *"What small step could
+help you start moving forward?"* That is advice wearing a question mark. Prompt rules reduce
+a behaviour; they do not guarantee its absence.
+
+**The safety line is static HTML, not a prompt instruction**
+A prompt saying "mention crisis resources if appropriate" is a probability — missable,
+arguable, degradable by an unusual entry. A line no model produces cannot fail. It lives in
+`base.html`, so every page inherits it by extending. `templates/base.html`
 
 ---
 
-*Last updated 2026-09-22.*
-*Not yet covered (doesn't exist yet): the startup API key check, and the `NULL`-row sweep.*
+*Last updated 2026-09-30.*
+*Not yet covered (doesn't exist yet): the background analysis worker, the `pending`-row
+sweep, and the CSRF test.*
