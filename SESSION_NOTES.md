@@ -2,11 +2,8 @@
 
 **Last worked: 2026-09-30.** Read this whole file before touching anything.
 
-> **⚠️ THE TESTS HAVE NOT BEEN RUN.**
-> `tests/test_isolation.py` was written but never executed — the shell was unavailable
-> when it landed. Everything it asserts is *believed*, not *observed*. **Run
-> `python -m pytest tests/ -q` before trusting any of the auth work.** If it fails, the
-> failure is real and the code is wrong; do not adjust the test to match.
+> **10 tests, all passing** (`python -m pytest tests/ -q`). Isolation, CLI registration, and
+> CSRF. Run them before trusting the auth work.
 
 ---
 
@@ -21,7 +18,7 @@
 | `analysis.py` | **new.** The only module that talks to Groq. |
 | `auth.py` | **new, untested.** Sessions, CSRF, signup/login/logout, `flask create-user`. |
 | `templates/` | `base.html` (new), `index.html` (rewritten), `login.html`, `signup.html` |
-| `tests/test_isolation.py` | **new, never executed.** |
+| `tests/` | **10 tests, all passing.** `test_isolation.py`, `test_cli.py`, `test_csrf.py`. |
 | `journal.db` | schema v3. Contains the 3 original dev rows, all `analysis_status='ok'`. |
 | `.env` | holds `SECRET_KEY` + `GROQ_API_KEY`. **Gitignored, never committed.** |
 | `venv/` | untracked. |
@@ -256,7 +253,7 @@ Migration 3 adds an index on `entries.user_id`, because every read now filters b
 | 9 | Closed mood vocabulary | ✅ |
 | 10 | Static safety line on every page | ✅ |
 | 11 | Accounts, sessions, CSRF, per-user scoping | ✅ **written, unverified** |
-| 12 | **Test `csrf_protect`** | ⬜ it is off in tests, so nothing covers it |
+| 12 | **Test `csrf_protect`** | ✅ `tests/test_csrf.py`, 5 tests |
 | 13 | Deferred/background analysis worker | ⬜ next real feature |
 | 14 | Retry/sweep for `pending` rows, capped by `retry_count` | ⬜ |
 | 15 | Probe files — **already deleted** (none appear in `git status`) | ✅ |
@@ -285,9 +282,29 @@ run, and they turn the log from "things the mentor said" into "things you can re
 
 ## 🔮 6. Open design questions
 
-1. **`csrf_protect` is disabled in tests** (`CSRF_ENABLED = False`, named explicitly in
-   `config.py` rather than silently patched). This means it is the **least-verified code in
-   `auth.py`**. It needs its own test before signup is ever opened to the public.
+1. **`csrf_protect` is now tested** — `tests/test_csrf.py`, five tests, against a *second*
+   app fixture with `CSRF_ENABLED = True`. The main suite still POSTs past the check
+   (`CSRF_ENABLED = False` there, deliberately, or every isolation POST would have to scrape
+   a token). So there are two apps rather than one app with the guard disabled — which is
+   what keeps the real behaviour verified somewhere.
+
+   The load-bearing test is the last one: **a token from another session is rejected.** The
+   three that precede it (no token → 400, wrong token → 400, real token → 302 **and** the row
+   exists) would all pass against a single hardcoded global token, which would defend against
+   nothing.
+
+   **And the general lesson from writing it:** `csrf_protect` rejects for *three* reasons in
+   one `or`:
+
+   ```python
+   if not expected or not sent or not secrets.compare_digest(sent, expected):
+   ```
+
+   A test can pass through **any** of them. `test_a_token_from_another_session_is_rejected`
+   opens with `mallory.get("/signup")` purely to close off the first two, so the only thing
+   left that can produce the 400 is the mismatch. Delete that line and the test still passes —
+   it just stops testing what it is named after. **Third occurrence of this shape.** It is the
+   most reusable thing learned in this project.
 2. **The worker doesn't exist yet.** `analysis_status` and `retry_count` are columns waiting
    for it. Today's flow is still synchronous: the request blocks on Groq.
 3. **Failures are not alike.** `429`/`503`/network are transient → retry. `401` is a global

@@ -72,6 +72,7 @@ Each entry has the same four parts:
 30. [Privacy failures are silent — so isolation must be structural *and* tested](#30-privacy-failures-are-silent--so-isolation-must-be-structural-and-tested)
 31. [A test that can pass for the wrong reason is not a test](#31-a-test-that-can-pass-for-the-wrong-reason-is-not-a-test)
 32. [Coverage of one entry point is not coverage of the app](#32-coverage-of-one-entry-point-is-not-coverage-of-the-app)
+33. [A guard that rejects for several reasons can be satisfied by any of them](#33-a-guard-that-rejects-for-several-reasons-can-be-satisfied-by-any-of-them)
 
 ---
 
@@ -1125,6 +1126,64 @@ different test applications without saying so.
 
 ---
 
-*Last updated: 2026-09-30.*
+## 33. A guard that rejects for several reasons can be satisfied by any of them
+
+**What it means.** When one condition rejects for several distinct reasons, a test asserting
+"this was rejected" passes if **any** of them fires. The test is green, and it does not know
+which reason it exercised — so it can quietly stop covering the one you cared about, with no
+signal at all.
+
+**How I proved it.** `csrf_protect` rejects for three different reasons, collapsed into a
+single `if`:
+
+```python
+if not expected or not sent or not secrets.compare_digest(sent, expected):
+    return "Bad request.", 400
+```
+
+1. no token stored in the session
+2. no token sent in the form
+3. the sent token does not match the stored one
+
+The test that matters — a token stolen from another session must not work:
+
+```python
+with csrf_app.test_client() as mallory:
+    mallory.get("/signup")            # ← closes reasons 1 and 2
+    response = mallory.post("/signup", data=signup_data(alice_token))
+
+assert response.status_code == 400
+```
+
+**Delete the `mallory.get("/signup")` line and the test still passes.** Mallory's session then
+holds no token, so reason 1 fires and `compare_digest` never runs. The test is green and it is
+now testing "a request with no token is rejected" — a case already covered elsewhere. It has
+stopped testing the property in its own name, silently.
+
+**The trap.** An assertion of *rejection* is satisfied by every possible rejection. It reads
+as a precise claim and is a much weaker one. The failure mode is invisible: the test does not
+go red when it stops being meaningful, because passing is what it does either way.
+
+**The remedy.** Before asserting a failure, **close off the other ways to fail**. Then the
+only remaining cause is the one under test.
+
+**This has now happened three times in this project**, which is why it is the most reusable
+thing in this log:
+
+| Test | The assertion that reads as proof | The one that closes the alternatives |
+|---|---|---|
+| isolation | `"AAAA" not in B's page` | assert both rows exist, under two distinct owners |
+| anonymous POST | `assert status_code == 302` | assert the table is still empty |
+| CSRF cross-session | `assert status_code == 400` | `mallory.get("/signup")` first |
+
+In every row, the left column passes on a system where the thing being tested is entirely
+absent. The right column is what makes the left column mean something.
+
+**Where it lives.** `tests/test_csrf.py`, `tests/test_isolation.py` — and see §31, which is
+the same idea arrived at from the other direction.
+
+---
+
+*Last updated: 2026-10-01.*
 *Next concepts to append: the background analysis worker — an entry point `test_client()`
 cannot reach — and the `pending`-row sweep.*

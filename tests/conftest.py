@@ -50,3 +50,36 @@ def journal_app(tmp_path):
 def client(journal_app):
     with journal_app.test_client() as test_client:
         yield test_client
+
+
+# --------------------------------------------------------------------------
+# CSRF
+#
+# A second app, because CSRF has to be ON to be tested and OFF for everything
+# else. The isolation tests POST a dozen times and would have to scrape a token
+# for each one -- noise that would bury the thing they are actually asserting.
+#
+# So there are two apps rather than one app with the check disabled. The
+# difference matters: `CSRF_ENABLED = False` is a deliberate, named override,
+# and this fixture is what makes sure the real behaviour is still verified
+# somewhere. Turning it off everywhere would leave csrf_protect untestable and
+# untested, which is how it got to be the least-verified code in auth.py.
+# --------------------------------------------------------------------------
+
+
+class CsrfConfig(TestConfig):
+    CSRF_ENABLED = True
+
+
+@pytest.fixture
+def csrf_app(tmp_path):
+    class Config(CsrfConfig):
+        DATABASE = str(tmp_path / "test.db")
+
+    return create_app(Config)
+
+
+@pytest.fixture
+def csrf_client(csrf_app):
+    with csrf_app.test_client() as test_client:
+        yield test_client
